@@ -3,31 +3,35 @@ apc-rock-II
 
 Kernel and Bootloader codes for Rock II (&amp; Paper II)
 
+Copyright © 2014 VIA Technologies, Inc.
 
-Building
+
+BUILD SOURCE CODE
 --------------------------
+### DEVELOP ENVIRONMENT
 
-Prepare
-#########
+OS: Ubuntu 12.04 x64
+Linux kernel toolchain: apc-rock-toolchain
+
+### Prepare
 
 Download toolchain from [apc-io/apc-rock-toolchain] (https://github.com/apc-io/apc-rock-toolchain)
-1. export ARCH=arm
-2. export CROSS_COMPILE=apc-rock-toolchain/mybin/arm_1103_le-
-3. export PATH=$PATH:apc-rock-toolchain/mybin/
 
-Uboot
-########
+    $ export ARCH=arm
+    $ export CROSS_COMPILE=apc-rock-toolchain/mybin/arm_1103_le-
+    $ export PATH=$PATH:apc-rock-toolchain/mybin/
 
-1. cd uboot
-2. make distclean
-3. make wmt_config
-4. make zuboot
-5. Rename zuboot as u-boot.bin and put it into FirmwareInstall/firmware/
+### Uboot
+
+    $ cd uboot
+    $ make distclean
+    $ make wmt_config
+    $ make zuboot
+    $ Rename zuboot as u-boot.bin and put it into FirmwareInstall/firmware/
 
 
-Kernel
-#######
+### Kernel
 
-1. make Android_defconfig
-2. make ubin
-3. Copy uzimage.bin into FirmwareInstall/firmware/
+    $ make Android_defconfig
+    $ make ubin
+    $ Copy uzimage.bin into FirmwareInstall/firmware/
