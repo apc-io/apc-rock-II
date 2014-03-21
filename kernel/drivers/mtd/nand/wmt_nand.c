@@ -46,6 +46,7 @@ WonderMedia Technologies, Inc.
 #include <mach/irqs.h>
 #include <mach/hardware.h>
 #include <linux/vmalloc.h>
+#include <linux/proc_fs.h>
 #include "wmt_nand.h"
 
 
@@ -323,76 +324,61 @@ unsigned int rdmz[BYTE_SEED]= {
 };
 #endif
 
+#define NANDINFO "nandinfo"
+static struct proc_dir_entry *nandinfo_proc = NULL;
+static struct mtd_info *mtd_nandinfo = NULL;
 uint8_t *buf_rdmz;
 /*#define NAND_DEBUG*/
 unsigned int wmt_version;
-uint32_t par1_ofs, par2_ofs, par3_ofs, par6_ofs, par7_ofs, eslc_write, prob_end, part_wr;
+uint32_t par1_ofs, par2_ofs, par3_ofs, par4_ofs, eslc_write, prob_end;
 #include <linux/mtd/partitions.h>
 #define NUM_NAND_PARTITIONS ARRAY_SIZE(nand_partitions)
 struct mtd_partition nand_partitions[] = {
-	{//0
+	{
+		.name		= "logo",
+		.offset		= MTDPART_OFS_APPEND,
+		.size		= 0x1000000,
+	},
+	{
+		.name		= "boot",
+		.offset		= MTDPART_OFS_APPEND,
+		.size		= 0x1000000,
+	},
+	{
+		.name		= "recovery",
+		.offset		= MTDPART_OFS_APPEND,
+		.size		= 0x1000000,
+	},
+	{
 		.name		= "misc",
 		.offset		= MTDPART_OFS_APPEND,
-		.size		= 0x00800000,
+		.size		= 0x1000000,
 	},
-	{//1
-		.name		= "u-boot-logo",
+	{
+		.name		= "keydata",
 		.offset		= MTDPART_OFS_APPEND,
-		.size		= 0x00800000,
+		.size		= 0x4000000,
 	},
-	{//2
-		.name		= "kernel-logo",
-		.offset		= MTDPART_OFS_APPEND,
-		.size		= 0x00800000,
-	},
-	{//3
-		.name		= "cache",
-		.offset		= MTDPART_OFS_APPEND,
-		.size		= 0x08000000,
-	},
-	{//4
+	{
 		.name		= "system",
+		.offset		= MTDPART_OFS_APPEND,
+		.size		= 0x30000000,
+	},
+	{
+		.name		= "cache",
 		.offset		= MTDPART_OFS_APPEND,
 		.size		= 0x20000000,
 	},
-	{//6+5
-		.name		= "recovery",
-		.offset		= MTDPART_OFS_APPEND,
-		.size		= 0x01000000,
-	},
-	{//6+6
-		.name		= "boot",
-		.offset		= MTDPART_OFS_APPEND,
-		.size		= 0x01000000,
-	},
-	{//6+7
-		.name		= "efs",
-		.offset		= MTDPART_OFS_APPEND,
-		.size		= 0x00800000,
-	},
-	{//6+8
-		.name		= "radio",
-		.offset		= MTDPART_OFS_APPEND,
-		.size		= 0x00800000,
-	},
-	{//6+9
-		.name		= "keydata",
-		.offset		= MTDPART_OFS_APPEND,
-		.size		= 0x01000000,
-	},
-	{//6+10
-		.name		= "swap",
-		.offset		= MTDPART_OFS_APPEND,
-		.size		= 0x08000000,
-	},
-	{//6+11
-		.name		= "userdata",
+	{
+		.name		= "data",
 		.offset		= MTDPART_OFS_APPEND,
 		.size		= MTDPART_SIZ_FULL,
 	}
 };
 EXPORT_SYMBOL(nand_partitions);
 
+int second_chip = 0;
+EXPORT_SYMBOL(second_chip);
 
 #ifdef CONFIG_MTD_NAND_WMT_HWECC
 	static int MAX_CHIP = CONFIG_MTD_NAND_CHIP_NUM;
@@ -574,8 +560,10 @@ static struct nand_bbt_descr wmt_bbt_mirror_descr_2048 = {
 
 /* controller and mtd information */
 
+int wmt_isbad_bbt(struct mtd_info *mtd, struct nand_chip *chip, int block);
 static void print_nand_register(struct mtd_info *mtd);
 void print_nand_buffer(char *value, unsigned int length);
+void set_FIFO_FF(unsigned int *buf, int size);
 #ifdef NAND_DEBUG
 static void print_nand_buffer_int(unsigned int *value, unsigned int length);
 #endif
@@ -737,7 +725,10 @@ int set_ECC_mode(struct mtd_info *mtd)
 			ECC_mode = ECC24bitPer1K;
 			break;
 		case 40:
-			ECC_mode = ECC24bitPer1K;
+			ECC_mode = ECC40bitPer1K;
+			break;
+		case 60:
+			ECC_mode = ECC60bitPer1K;
 			break;
 		default:
 			printk("ecc mode input not support ECCbit=%d\n", ECCbit);
@@ -817,6 +808,7 @@ void calculate_ECC_info(struct mtd_info *mtd, struct ECC_size_info *ECC_size)
 		ECC_size->max_bit_error = 60;
 		ECC_size->oob_max_bit_error = 24;
 		ECC_size->banks = mtd->writesize/1024;
+		ECC_size->bank_size = 1024;
 		ECC_size->bank_offset = mtd->writesize/ECC_size->banks + ECC60bitPer1K_byte_count;
 		ECC_size->ECC_bytes = ECC60bitPer1K_byte_count;
 		ECC_size->oob_ECC_bytes = ECC24bitPer1K_byte_count;
@@ -828,6 +820,38 @@ void calculate_ECC_info(struct mtd_info *mtd, struct ECC_size_info *ECC_size)
 		break;;
 	}
 	return;
+}
+
+int get_partition_name(const char *src, char** endpp, char* buffer)
+{
+	int i = 0;
+	if(NULL == src || NULL == buffer)
+	{
+		return -1;
+	}
+
+	while(*src != ':')
+	{
+		*buffer++ = *src++;	
+		i++;
+	}
+	*endpp = (char *)src;
+	buffer[i] = '\0';
+	return i;
+}
+
+int search_mtd_table(char *string, int *ret)
+{
+	int i, err = 0;
+	for (i = 0; i < NUM_NAND_PARTITIONS; i++) {
+	//	printk(KERN_DEBUG "MTD dev%d size: %8.8llx \"%s\"\n",
+	//i, nand_partitions[i].size, nand_partitions[i].name);
+		if (strcmp(string, nand_partitions[i].name) == 0) {
+			*ret = i;
+			break;
+		}
+	}
+	return err;
 }
 
 /*
@@ -1073,6 +1097,8 @@ void wmt_init_nfc(struct mtd_info *mtd, unsigned int spec_clk, unsigned int spec
 		page_size = PAGE_2K;
 	} else if (mtd->writesize == 4096) {
 		page_size = PAGE_4K;
+	} else if (mtd->writesize == 6144) {
+		page_size = PAGE_8K;
 	} else if (mtd->writesize == 8192) {
 		page_size = PAGE_8K;
 	} else if (mtd->writesize == 16384) {
@@ -1121,12 +1147,8 @@ void wmt_init_nfc(struct mtd_info *mtd, unsigned int spec_clk, unsigned int spec
 		;
 	}
 	divisor = *(volatile unsigned long *)PMNAND_ADDR;
-	if (((mtd->id>>24)&0xFF) == NAND_MFR_HYNIX) {
-		if (prob_end == 1)
-			NFC_RWTimming = 0x1312;//0x2424;
-		else
-			NFC_RWTimming = 0x2424;
-	}
+	if (((mtd->id>>24)&0xFF) == NAND_MFR_HYNIX)
+		NFC_RWTimming = 0x2424;
 
 	printk(KERN_NOTICE "TWB=%dT, tWHR=%dT, tadl=%dT, div=0x%x, (RH/RC/WH/WC)=0x%x\n",
 	nfc_rw.T_TWB, nfc_rw.T_TWHR, nfc_rw.T_TADL, divisor, NFC_RWTimming);
@@ -1328,7 +1350,7 @@ int column, unsigned int page_addr)
 		if (readb(info->reg + NFCR15_IDLE_STAT) & NFC_IDLE)
 			break;
 		if (i>>20) {
-			writeb(READ_RESUME,	info->reg + NFCR9_ECC_BCH_CTRL + 1);
+			//writeb(READ_RESUME,	info->reg + NFCR9_ECC_BCH_CTRL + 1);
 			printk(KERN_NOTICE "nfc_wait_idle time out\n");
 			print_nand_register(mtd);
 			//while(i);
@@ -1342,7 +1364,7 @@ int column, unsigned int page_addr)
 	return 0;
 }
 
-int check_all_FF(unsigned int *buf, int size, int oob, struct mtd_info *mtd)
+int check_all_FF(unsigned int *buf, int size, struct mtd_info *mtd)
 {
 	/*struct wmt_nand_info *info = wmt_nand_mtd_toinfo(mtd);*/
 	int i = 0, j = 0, k = 0;
@@ -1405,7 +1427,7 @@ void bch_data_ecc_correct(struct mtd_info *mtd)
 			writeb(READ_RESUME,	info->reg + NFCR9_ECC_BCH_CTRL + 1);
 			if (bank >= (info->banks-1)) {
 				//all_FF = check_rdmz_mark((uint32_t *)(info->reg+ECC_FIFO_4), 1, 0, mtd);
-				all_FF = check_all_FF((uint32_t *)(info->reg+ECC_FIFO_6), 6, 1/*oob_parity_size/4*/, mtd);
+				all_FF = check_all_FF((uint32_t *)(info->reg+ECC_FIFO_6), 6, mtd);
 				if (info->unc_allFF == ((1<<info->banks)-1) && all_FF) {
 					info->data_ecc_uncor_err = 0;
 					/*set_FIFO_FF((uint32_t *)(info->reg+ECC_FIFO_0), 5);
@@ -1494,14 +1516,14 @@ void bch_redunt_ecc_correct(struct mtd_info *mtd)
 	if (info->isr_cmd != 0x50) {
 		printk("bch_redunt_ecc_correct cmd not read oob \n");
 		print_nand_register(mtd);
-		while(1)
-			;
+//		while(1);
 	}
 	oob_parity_size = readb(info->reg + NFCR10_OOB_ECC_SIZE+1);
 	if (oob_parity_size >= 40)
 		oob_parity_size = 40;
 	if (bch_ecc_idx >= BCH_ERR_CNT) {
-		all_FF = check_all_FF((uint32_t *)(info->reg+ECC_FIFO_6), oob_parity_size/4, 1, mtd);
+		info->unc_allFF = 1;
+		all_FF = check_all_FF((uint32_t *)(info->reg+ECC_FIFO_6), oob_parity_size/4, mtd);
 
 		writeb((ERR_CORRECT | BCH_ERR),	info->reg + NFCRb_NFC_INT_STAT);
 		writeb(READ_RESUME,	info->reg + NFCR9_ECC_BCH_CTRL + 1);
@@ -1528,8 +1550,13 @@ void bch_redunt_ecc_correct(struct mtd_info *mtd)
 			#endif
 			
 			return;
-		} else
-			printk(KERN_ERR "red area uncor err page=0x%x no retry\n", info->cur_page);
+		} else {
+			unsigned int block = info->cur_page >> (this->phys_erase_shift - this->page_shift);
+			int status = wmt_isbad_bbt(mtd, this, block);
+			if(status == 0) {
+				printk(KERN_ERR "red area uncor err page=0x%x no retry\n", info->cur_page);
+			}
+		}
 		mtd->ecc_stats.failed++;
 		return; /* uncorrected err */
 	}
@@ -1572,7 +1599,7 @@ void bch_data_last_bk_ecc_correct(struct mtd_info *mtd)
 	bank_size = info->bank_size;
 	if (bch_ecc_idx >= BCH_ERR_CNT) {
 		unsigned int oob_parity_size = readb(info->reg + NFCR10_OOB_ECC_SIZE+1);
-		all_FF = check_all_FF((uint32_t *)(info->reg+ECC_FIFO_6), oob_parity_size/4, 1, mtd);
+		all_FF = check_all_FF((uint32_t *)(info->reg+ECC_FIFO_6), oob_parity_size/4, mtd);
 		writeb((ERR_CORRECT | BCH_ERR),	info->reg + NFCRb_NFC_INT_STAT);
 		writeb(READ_RESUME,	info->reg + NFCR9_ECC_BCH_CTRL + 1);
 		if (all_FF > 0)
@@ -1613,6 +1640,218 @@ void bch_data_last_bk_ecc_correct(struct mtd_info *mtd)
 	/* continue read next bank and calc BCH ECC */
 	writeb((ERR_CORRECT | BCH_ERR),	info->reg + NFCRb_NFC_INT_STAT);
 	writeb(READ_RESUME,	info->reg + NFCR9_ECC_BCH_CTRL + 1);
+}
+
+void bch_data_ecc_correct_noalign(struct mtd_info *mtd)
+{
+	int i, all_FF = 0;
+	struct wmt_nand_info *info = wmt_nand_mtd_toinfo(mtd);
+	struct nand_chip *this = mtd->priv;
+	unsigned int bank_stat2, bch_ecc_idx, bank, dmabank = info->banks;
+	unsigned int bank_size;
+	
+	if ((mtd->pageSizek >> (ffs(mtd->pageSizek) - 1)) != 1)
+		dmabank = info->banks + 1;
+
+		/* BCH ECC err process */
+		bank_stat2 = readw(info->reg + NFCR17_ECC_BCH_ERR_STAT);
+		bch_ecc_idx = bank_stat2 & BCH_ERR_CNT;
+		bank = (bank_stat2 & BANK_NUM) >> 8;
+		bank_size = info->bank_size;
+		/* for data area */
+		/*if (bch_ecc_idx >= 50)
+			printk(KERN_NOTICE "pg=0x%x=blk%d bk%d=%d\n",info->cur_page, info->cur_page/mtd->pagecnt, bank, bch_ecc_idx);*/
+		#ifdef NAND_DEBUG
+		printk(KERN_NOTICE "Read data \n");//print_nand_register(mtd);
+		#endif
+		/*if (this->cur_chip && (info->cur_page%4) == 0)
+		if ((info->cur_lpage < 0x7FB00) && this->cur_chip->cur_try_times < 5 && this->cur_chip != 0 && info->isr_cmd == 0x0) {
+			printk("----------------------------------set unc error by dannier info->cur_page0x%x\n", info->cur_page);
+			bch_ecc_idx = BCH_ERR_CNT;
+		}*/
+		if (bch_ecc_idx >= BCH_ERR_CNT) {
+			/*if (bank >= (dmabank-1))
+				print_nand_buffer((uint8_t *)info->dmabuf+bank_size * (dmabank-1), 32);*/
+			//unsigned int oob_parity_size = readb(info->reg + NFCR10_OOB_ECC_SIZE+1);
+			if (bank == 0)
+				info->unc_allFF = 1;
+			else
+				info->unc_allFF |= (1<<bank);
+			/*if (oob_parity_size >= 40)                                 
+				oob_parity_size = 40;*/
+
+			writeb((ERR_CORRECT | BCH_ERR),	info->reg + NFCRb_NFC_INT_STAT);
+			wmb();
+			writeb(READ_RESUME,	info->reg + NFCR9_ECC_BCH_CTRL + 1);
+			wmb();
+
+			if (bank >= (dmabank-1)) {
+				if (dmabank == (info->banks + 1))
+					all_FF = check_all_FF((uint32_t *)(info->dmabuf+mtd->writesize+24), 6, mtd);
+				else
+					all_FF = check_all_FF((uint32_t *)(info->reg+ECC_FIFO_6), 6, mtd);
+				if (info->unc_allFF == ((1<<dmabank)-1) && all_FF) {
+					info->data_ecc_uncor_err = 0;
+					/*set_FIFO_FF((uint32_t *)(info->reg+ECC_FIFO_0), 5);
+					set_FIFO_FF((uint32_t *)info->dmabuf, mtd->writesize/4);*/
+					return;
+				} /*else
+					printk("**********lost check all FF case *********af%x, bk%x\n",
+					info->unc_allFF,((1<<dmabank)-1));*/
+			}
+
+
+			if (info->isr_cmd == 0x0 && mtd->dwRetry && this->cur_chip) {
+				info->data_ecc_uncor_err = 1;
+				if ((info->cur_page >= ((mtd->blkcnt-8)*mtd->pagecnt) &&
+				info->cur_page < ((mtd->blkcnt-4)*mtd->pagecnt)) &&
+				((this->cur_chip->nand_id>>24)&0xFF) == NAND_MFR_HYNIX) {
+					/* read retry table not allowed to use read retry */
+					info->data_ecc_uncor_err = 2;
+					if (bank >= (dmabank-1))
+						printk(KERN_ERR "data area bank %d uncor err page=0x%x no retry\n", bank, info->cur_page);
+				}
+				#ifdef RETRY_DEBUG
+				else {
+					if (bank >= (dmabank-1))
+						printk(KERN_ERR "data area bank %d uncor err page=0x%x use retry\n", bank, info->cur_page);
+				}
+				#endif
+
+				return;
+			} else {
+				if (bank >= (dmabank-1)) {
+					printk("cur page=%x hold=%x blkcnt=%d\n", info->cur_page, ((mtd->blkcnt - 8)*mtd->pagecnt), mtd->blkcnt);
+					printk(KERN_ERR "data area uncor err page=0x%x,blk=%d no retry\n", info->cur_page, info->cur_page/mtd->pagecnt);
+					/*print_nand_buffer(info->dmabuf, 32);printk("isrcmd 0x=%x\n", info->isr_cmd);
+					print_nand_buffer((uint8_t *)(info->reg+ECC_FIFO_0), 48);
+					print_nand_register(mtd);
+					while(1);*/
+				} else
+					return;
+			}
+			printk(KERN_ERR "data area unc++ page=0x%x no retry\n", info->cur_page);
+			mtd->ecc_stats.failed++;
+			return; /* uncorrected err */
+		}
+		/* mtd->ecc_stats.corrected += (bank_stat2 & BCH_ERR_CNT);*/
+		/* BCH ECC correct */
+		#ifdef NAND_DEBUG
+		printk(KERN_NOTICE "data area %d bit corrected err on bank %d \n", bch_ecc_idx, bank);
+		#endif
+		/*if (bank >= (dmabank-1)) {
+			print_nand_register(mtd);
+		}*/
+
+		for (i = 0; i < bch_ecc_idx; i++)
+			bch_err_pos[i] = (readw(info->reg +	NFCR18_ECC_BCH_ERR_POS + 2*i) & BCH_ERRPOS0);
+		
+		/* continue read next bank and calc BCH ECC */
+		writeb((ERR_CORRECT | BCH_ERR),	info->reg + NFCRb_NFC_INT_STAT);
+		wmb();
+		writeb(READ_RESUME,	info->reg + NFCR9_ECC_BCH_CTRL + 1);
+		wmb();
+
+		for (i = 0; i < bch_ecc_idx; i++) {
+			//bch_err_pos[i] = (readw(info->reg +	NFCR18_ECC_BCH_ERR_POS + 2*i) & BCH_ERRPOS0);
+			//if (bank >= (dmabank-1))
+			//printk(KERN_NOTICE "data area byte=%d corrected err on bank %d bs=%d, banks=%d\n", bch_err_pos[i]>>3, bank, bank_size,dmabank);
+			//printk(KERN_NOTICE "data page=0x%x byte=%d corrected err on bank %d bs=%d, banks=%d\n",
+			//info->cur_page, bch_err_pos[i]>>3, bank, bank_size,dmabank);
+			if((bch_err_pos[i] >> 3) < bank_size) {
+				//if (bank >= (dmabank-1))
+				//printk(KERN_NOTICE "bank%d area value=%x ", bank, info->dmabuf[bank_size* bank + (bch_err_pos[i] >> 3)]);
+				bit_correct(&info->dmabuf[bank_size* bank + (bch_err_pos[i] >> 3)], bch_err_pos[i] & 0x07);
+				//if (bank >= (dmabank-1))
+				//printk(KERN_NOTICE "bank%d area c-value=%x \n", bank, info->dmabuf[bank_size* bank + (bch_err_pos[i] >> 3)]);
+			} else if ((bch_err_pos[i] >> 3) < (bank_size + 24) && bank >= (dmabank-1)) {//oob area
+			//if (bank >= (dmabank-1))
+				//printk(KERN_NOTICE "red area value=%x ", *((uint8_t *)(info->reg+ECC_FIFO_0)+(bch_err_pos[i] >> 3) - bank_size));
+				bit_correct((uint8_t *)(info->reg+ECC_FIFO_0)+(bch_err_pos[i] >> 3) - bank_size, (bch_err_pos[i] & 0x07));
+				//if (bank >= (dmabank-1))
+				//printk(KERN_NOTICE "red area c-value=%x \n", *((uint8_t *)(info->reg+ECC_FIFO_0)+(bch_err_pos[i] >> 3) - bank_size));
+			}
+			#ifdef NAND_DEBUG
+			printk(KERN_NOTICE "data area %xth ecc error position is byte%d bit%d\n",
+			i, bank_size * bank + (bch_err_pos[i] >> 3), (bch_err_pos[i] & 0x07));
+			#endif
+		}
+}
+
+void bch_data_last_bk_ecc_correct_noalign(struct mtd_info *mtd)
+{
+	int i, all_FF;
+	struct wmt_nand_info *info = wmt_nand_mtd_toinfo(mtd);
+	struct nand_chip *this = mtd->priv;
+	unsigned int bank_stat2, bch_ecc_idx, bank, bank_size, dmabank = info->banks;
+	
+	if ((mtd->pageSizek >> (ffs(mtd->pageSizek) - 1)) != 1)
+		dmabank = info->banks + 1;
+
+	/* BCH ECC err process */
+	bank_stat2 = readw(info->reg + NFCR17_ECC_BCH_ERR_STAT);
+	bch_ecc_idx = bank_stat2 & BCH_ERR_CNT;
+	bank = (bank_stat2 & BANK_NUM) >> 8;
+	/* mtd->ecc_stats.corrected += (bank_stat2 & BCH_ERR_CNT);*/
+	/* BCH ECC correct */
+	
+	#ifdef NAND_DEBUG
+	printk(KERN_NOTICE "Read lst bk data \n");
+	#endif
+	
+	bank_size = info->bank_size;
+	if (bch_ecc_idx >= BCH_ERR_CNT) {
+		//print_nand_buffer((uint8_t *)info->dmabuf+bank_size * (dmabank-1), 32);
+			//unsigned int oob_parity_size = readb(info->reg + NFCR10_OOB_ECC_SIZE+1);
+			if (dmabank == (info->banks + 1))
+				all_FF = check_all_FF((uint32_t *)(info->dmabuf+bank_size * (dmabank-1)/*+24*/), 6, mtd);
+			else
+				all_FF = check_all_FF((uint32_t *)(info->reg+ECC_FIFO_6), 6/*oob_parity_size/4*/, mtd);
+		writeb((ERR_CORRECT | BCH_ERR),	info->reg + NFCRb_NFC_INT_STAT);
+		wmb();
+		writeb(READ_RESUME,	info->reg + NFCR9_ECC_BCH_CTRL + 1);
+		wmb();
+		if (all_FF > 0)
+			return;
+		if (mtd->dwRetry && this->cur_chip) {
+			info->data_ecc_uncor_err = 1;
+			printk(KERN_ERR
+			"last bank data area uncorrected err cur_page=%d use retry\n",info->cur_page);
+			return;
+		} else
+			printk(KERN_ERR
+			"last bank data area uncorrected err cur_page=%d no retry\n",info->cur_page);
+		mtd->ecc_stats.failed++;
+			printk(KERN_ERR "lst area unc++ page=0x%x no retry\n", info->cur_page);
+		//while(bank_stat1);
+		return;
+	}
+	/* mtd->ecc_stats.corrected += (bank_stat2 & BCH_ERR_CNT);*/
+	/* BCH ECC correct */
+	#ifdef NAND_DEBUG
+	printk(KERN_NOTICE "last bank %d bit corrected error\n", bch_ecc_idx);
+	#endif
+	for (i = 0; i < bch_ecc_idx; i++) {
+		bch_err_pos[i] = (readw(info->reg +	NFCR18_ECC_BCH_ERR_POS + 2*i) & BCH_ERRPOS0);
+		//printk(KERN_NOTICE "data area byte=%d corrected err on bank %d bs=%d, banks=%d\n", bch_err_pos[i]>>3, bank, bank_size,dmabank);
+		if((bch_err_pos[i] >> 3) < bank_size) {
+				bit_correct(&info->dmabuf[bank_size * (dmabank-1) + (bch_err_pos[i] >> 3)], bch_err_pos[i] & 0x07);
+		} else if ((bch_err_pos[i] >> 3) < (bank_size + 24)) {//oob area of last bank
+			//printk(KERN_NOTICE "redundant area value=%d ", *((uint8_t *)(info->reg+ECC_FIFO_0)+(bch_err_pos[i] >> 3) - bank_size));
+			bit_correct((uint8_t *)(info->reg+ECC_FIFO_0)+(bch_err_pos[i] >> 3) - bank_size, (bch_err_pos[i] & 0x07));
+			//printk(KERN_NOTICE "redundant area value=%d \n", *((uint8_t *)(info->reg+ECC_FIFO_0)+(bch_err_pos[i] >> 3) - bank_size));
+		}
+
+		#ifdef NAND_DEBUG
+		printk(KERN_NOTICE "data area last bank %xth ecc error position is byte%d bit%d\n",
+		i, bank_size * bank + (bch_err_pos[i] >> 3), (bch_err_pos[i] & 0x07));
+		#endif
+	}
+	/* continue read next bank and calc BCH ECC */
+	writeb((ERR_CORRECT | BCH_ERR),	info->reg + NFCRb_NFC_INT_STAT);
+	wmb();
+	writeb(READ_RESUME,	info->reg + NFCR9_ECC_BCH_CTRL + 1);
+	wmb();
 }
 
 /*
@@ -1883,7 +2122,7 @@ int nand_pdma_handler(struct mtd_info *mtd)
 } else
 #endif
 	status = readl(info->reg + NFC_DMA_CCR) & NAND_PDMA_CCR_EvtCode;
-	writel(readl(info->reg + NFC_DMA_ISR)&NAND_PDMA_IER_INT_STS, info->reg + NFC_DMA_ISR);
+	//writel(readl(info->reg + NFC_DMA_ISR)&NAND_PDMA_IER_INT_STS, info->reg + NFC_DMA_ISR);
 	if (status == NAND_PDMA_CCR_Evt_ff_underrun)
 		printk(KERN_ERR "PDMA Buffer under run!\n");
 
@@ -1946,10 +2185,10 @@ int nand_get_feature(struct mtd_info *mtd, int addr)
 		}
 		info->dmabuf[i] = readb(info->reg + NFCR0_DATAPORT) & 0xff;
 	}
-	//#ifdef NAND_DEBUG
+	#ifdef NAND_DEBUG
 	printk(KERN_NOTICE "nand get feature %x %x %x %x\n",
 	info->dmabuf[0], info->dmabuf[1], info->dmabuf[2], info->dmabuf[3]);
-	//#endif
+	#endif
 	info->datalen = 0;
 	return 0;
 }
@@ -2087,6 +2326,7 @@ int get_parameter(struct mtd_info *mtd, uint8_t *buf, uint8_t *addr, int size)
 			return status;
 		}
 
+		writel(readl(info->reg + NFC_DMA_ISR)&NAND_PDMA_IER_INT_STS, info->reg + NFC_DMA_ISR);
 		status = nand_pdma_handler(mtd);
 		nand_free_pdma(mtd);
 		if (status)
@@ -2155,18 +2395,18 @@ int hynix_get_parameter(struct mtd_info *mtd, int mode)
 			//printk("Retry Current: ");
 			//print_nand_buffer(buf, reg_num);
 			//printk("\n");
-			for (j = 0; j < cur_chip->total_try_times; j++) {
-				for (i = 0; i < reg_num; i++) {
-					if (buf[i] != cur_chip->retry_value[j*reg_num+i])
-						break;
-				}
-				//printk("i = %d\n", i);
-				if (i == reg_num) {
-					cur_chip->cur_try_times = j;
-					//printk("@@@@@@@@@@@@@@@@@@@@@@@Get current try times %d from uboot.\n", j);
-					break;
-				}
-			}
+            for(j = 0; j < cur_chip->total_try_times; j++) {
+                for(i = 0; i < reg_num; i++) {
+                    if(buf[i] != cur_chip->retry_value[j*reg_num+i])
+                        break;
+                }
+                if(i == reg_num) {
+                    cur_chip->cur_try_times = j;
+                    printk("Get current try times %d from current register.\n", j);
+                    break;
+                } 
+            }
+
 		}
 	}
 	return rc;
@@ -2256,6 +2496,7 @@ int write_bytes_cmd(struct mtd_info *mtd, int cmd_cnt, int addr_cnt, int data_cn
 			counter--;
 		}
 	if (data_cnt > 0) {
+		writel(readl(info->reg + NFC_DMA_ISR)&NAND_PDMA_IER_INT_STS, info->reg + NFC_DMA_ISR);
 		status = nand_pdma_handler(mtd);
 		nand_free_pdma(mtd);
 		if (status) {
@@ -2966,10 +3207,14 @@ static int wmt_nand_page_read(struct mtd_info *mtd, unsigned command, int column
 			tmp = (mtd->oobsize > 512) ? mtd->oobsize : 512;
 			wmt_nfc_dma_cfg(mtd, tmp, 0, -1, -1);
 		} else {
-			if (info->oob_ecc_error == 0x50)//read last bank for oob in DDR mode
+			if (info->oob_ecc_error == 0x50) {//read last bank for oob in DDR mode
 				wmt_nfc_dma_cfg(mtd, chip->ecc.size, 0, -1, -1);
-			else
-				wmt_nfc_dma_cfg(mtd, mtd->writesize, 0, -1, -1);
+			} else {
+				if ((mtd->pageSizek >> (ffs(mtd->pageSizek)-1)) != 1)
+					wmt_nfc_dma_cfg(mtd, mtd->writesize + 1024, 0, -1, -1);
+				else
+					wmt_nfc_dma_cfg(mtd, mtd->writesize, 0, -1, -1);
+			}
 		}
 		/*print_nand_register(mtd);*/
 		wmb();
@@ -3039,7 +3284,6 @@ static int wmt_nand_page_read(struct mtd_info *mtd, unsigned command, int column
 
 		if(info->data_ecc_uncor_err == 1) {
 			if((cur_chip != NULL)) {
-				printk("Uncor Ecc Err %d_th, on page 0x%x fail., cur_try_time=%d\n", i, page_addr, cur_chip->cur_try_times);
 				if (id == NAND_MFR_HYNIX) {
 					//printk("set retry mode cur_try_times=%d\n", cur_chip->cur_try_times);
 					cur_chip->set_parameter(mtd, READ_RETRY_MODE, ECC_ERROR_VALUE);
@@ -3048,18 +3292,19 @@ static int wmt_nand_page_read(struct mtd_info *mtd, unsigned command, int column
 					if (i == total_try_times) {
 						cur_chip->retry = 0;
 						/* read retry many times still ecc uncorrectable error */
-						printk("read page after retry still uncor err\n");
+						printk("FAIL TO READ PAGE 0x%x AFTER RETRY.\n", page_addr);
 						mtd->ecc_stats.failed++;
 						//while(cur_chip);
 						return status;
 					}
 				} else if (id == NAND_MFR_TOSHIBA) {
+					printk("Uncor Ecc Err %d_th, on page 0x%x fail., cur_try_time=%d\n", i, page_addr, cur_chip->cur_try_times);
 					if (cur_chip->cur_try_times >= total_try_times) {
 						/* send reset cmd after read retry finish(fail) for toshiba */
 						write_bytes_cmd(mtd, 1, 0, 0, (uint8_t *)&reset, NULL, NULL);
 						cur_chip->cur_try_times = 0;
 						cur_chip->retry = 0;
-						printk("read page after retry still uncor err\n");
+						printk("FAIL TO READ PAGE 0x%x AFTER RETRY.\n", page_addr);
 						mtd->ecc_stats.failed++;
 						//while(cur_chip);
 						return status;
@@ -3069,12 +3314,13 @@ static int wmt_nand_page_read(struct mtd_info *mtd, unsigned command, int column
 					cur_chip->set_parameter(mtd, 0, 0);
 					cur_chip->retry = 1;
 				} else if (id == NAND_MFR_SAMSUNG || id == NAND_MFR_MICRON) {
+					printk("Uncor Ecc Err %d_th, on page 0x%x fail., cur_try_time=%d\n", i, page_addr, cur_chip->cur_try_times);
 					if (cur_chip->cur_try_times >= total_try_times) {
 						/* send default cmd after read retry finish(fail) for samsung */
 						cur_chip->set_parameter(mtd, READ_RETRY_MODE, DEFAULT_VALUE);
 						cur_chip->cur_try_times = 0;
 						cur_chip->retry = 0;
-						printk("read page after retry still uncor err\n");
+						printk("FAIL TO READ PAGE 0x%x AFTER RETRY.\n", page_addr);
 						mtd->ecc_stats.failed++;
 						//while(cur_chip);
 						return status;
@@ -3083,6 +3329,7 @@ static int wmt_nand_page_read(struct mtd_info *mtd, unsigned command, int column
 					cur_chip->retry = 1;
 				} else if (id == NAND_MFR_SANDISK) {
 					//printk("set retry mode cur_try_times=%d\n", cur_chip->cur_try_times);
+					printk("Uncor Ecc Err %d_th, on page 0x%x fail., cur_try_time=%d\n", i, page_addr, cur_chip->cur_try_times);
 					cur_chip->set_parameter(mtd, total_try_times, ECC_ERROR_VALUE);
 					if (i == 0 && cur_chip->retry != 1)
 						write_bytes_cmd(mtd, 1, 0, 0, &retry_enable, NULL, NULL);
@@ -3092,7 +3339,7 @@ static int wmt_nand_page_read(struct mtd_info *mtd, unsigned command, int column
 						write_bytes_cmd(mtd, 1, 0, 0, &retry_disable, NULL, NULL);
 						cur_chip->retry = 0;
 						/* read retry many times still ecc uncorrectable error */
-						printk("read page after retry still uncor err\n");
+						printk("FAIL TO READ PAGE 0x%x AFTER RETRY.\n", page_addr);
 						mtd->ecc_stats.failed++;
 						//while(cur_chip);
 						return status;
@@ -3104,9 +3351,12 @@ static int wmt_nand_page_read(struct mtd_info *mtd, unsigned command, int column
 			}
 		} else {
 			if (cur_chip) {
-				if (cur_chip->retry == 1)
-					printk("read retry PASS cur_try_times=%d\n", cur_chip->cur_try_times);
-				else
+				unsigned int bakeup;
+				if (cur_chip->retry == 1) {
+					if(id != NAND_MFR_HYNIX)
+						printk("read retry PASS cur_try_times=%d\n", cur_chip->cur_try_times);
+					bakeup = *(uint32_t *)info->dmabuf;
+				} else
 					break;
 				/* send reset cmd after read retry finish(pass) for toshiba */
 				if (id == NAND_MFR_TOSHIBA) {
@@ -3124,6 +3374,7 @@ static int wmt_nand_page_read(struct mtd_info *mtd, unsigned command, int column
 					cur_chip->cur_try_times = -1;
 				}
 				cur_chip->retry = 0;
+				*(uint32_t *)info->dmabuf = bakeup;
 			}
 			break;
 		}
@@ -3256,8 +3507,11 @@ static int hynix_eslc_page_address_calculate(struct mtd_info *mtd, struct nand_c
 	block = page >> blk_page_shift;
 	page_in_blk = page%mtd->pagecnt;
 
-	if (page < par1_ofs) {
+	if (page < par1_ofs/4) {
 		par_page_start = 0;
+		par_page_end = par1_ofs/4;
+	} else if (page < par1_ofs) {
+		par_page_start = par1_ofs/4;
 		par_page_end = par1_ofs;
 	} else if (page < par2_ofs) {
 		par_page_start = par1_ofs;
@@ -3265,9 +3519,9 @@ static int hynix_eslc_page_address_calculate(struct mtd_info *mtd, struct nand_c
 	} else if (page < par3_ofs) {
 		par_page_start = par2_ofs;
 		par_page_end = par3_ofs;
-	} else /*if (page < par7_ofs)*/ {
-		par_page_start = par6_ofs;
-		par_page_end = par7_ofs;
+	} else {
+		par_page_start = par3_ofs;
+		par_page_end = par4_ofs;
 	}
 	par_blk_start = par_page_start >> blk_page_shift;
 	par_blk_end = par_page_end >> blk_page_shift;
@@ -3276,7 +3530,7 @@ static int hynix_eslc_page_address_calculate(struct mtd_info *mtd, struct nand_c
 	for (j = par_blk_start; j < block; j++) {
 		status = wmt_isbad_bbt(mtd, chip, j);
 		if (status) {
-			#ifdef ELSC_DEBUG
+			#ifdef ESLC_DEBUG
 			if (page_in_blk == 0 || page_in_blk == (mtd->pagecnt/2))
 				printk("skip blk%d bad\n", j);
 			#endif
@@ -3289,14 +3543,14 @@ static int hynix_eslc_page_address_calculate(struct mtd_info *mtd, struct nand_c
 	for (i = par_blk_start; i < par_blk_end; i++) {
 		status = wmt_isbad_bbt(mtd, chip, i);
 		if (status == 0) {
-			#ifdef ELSC_DEBUG
+			#ifdef ESLC_DEBUG
 			if (page_in_blk == 0 || page_in_blk == (mtd->pagecnt/2))
 				printk("blk%d good\n",i);
 			#endif
 			good_blk++;
 		}
 		if (good_blk >= (real_need_blk + 1)) {
-			#ifdef ELSC_DEBUG
+			#ifdef ESLC_DEBUG
 			if (page_in_blk == 0 || page_in_blk == (mtd->pagecnt/2))
 				printk("wr blk%d \n",i);
 			#endif
@@ -3305,7 +3559,7 @@ static int hynix_eslc_page_address_calculate(struct mtd_info *mtd, struct nand_c
 	}
 	if (i >= par_blk_end) {
 		if (page_in_blk == 0 || page_in_blk == (mtd->pagecnt/2))
-			printk(KERN_ERR "eslc addr is out of partition size, skip page=0x%x read"
+			printk(KERN_ERR "eslc addr is out of partition size, skip page=0x%x"
 			", par_page_end=0x%x, end_blk=%d\n",	page, par_page_end, i);
 		return -1;
 	}
@@ -3345,7 +3599,11 @@ static void wmt_nand_cmdfunc(struct mtd_info *mtd, unsigned command, int column,
 	} else if (command == NAND_CMD_READ0 && chip->cur_chip && prob_end == 1 &&
 	(chip->cur_chip->nand_id>>24) == NAND_MFR_HYNIX) {
 		#ifdef ESLC_READ_WRITE
-		if (page_addr < par3_ofs ||	(page_addr >= par6_ofs && page_addr < par7_ofs)) {
+		if ((page_addr < par4_ofs && second_chip == 0)) {
+			#ifdef ESLC_DEBUG
+			if (page_addr%mtd->pagecnt == 0 || page_addr%mtd->pagecnt == (mtd->pagecnt/2))
+				printk("\ncmdfunc: \n");
+			#endif
 			page_addr = hynix_eslc_page_address_calculate(mtd, chip, page_addr);
 			if (page_addr < 0)
 				return;
@@ -3875,14 +4133,81 @@ static uint8_t wmt_read_byte(struct mtd_info *mtd)
 	return d;
 }
 
-static int wmt_nand_read_oob(struct mtd_info *mtd, struct nand_chip *chip, int page, int sndcmd)
+static int wmt_nand_read_oob_noalign(struct mtd_info *mtd, struct nand_chip *chip, int page, int sndcmd)
 {
 	struct wmt_nand_info *info = wmt_nand_mtd_toinfo(mtd);
 	uint8_t *buf = chip->oob_poi;
+	uint8_t *bufpoi = buf;
+	#ifdef WMT_RDMZ
+	unsigned int rdmz_mark = 0;
+	#endif
+
+	info->unc_allFF = 0;
+	
+	// read redundant area cmd
+	//printk(KERN_NOTICE "scan oob page=0x%x\n", page);dannier
+	info->oob_ecc_error = 0x0;
+	#if 0
+	if (!mtd->dwDDR) {
+		writeb(readb(info->reg + NFCRd_OOB_CTRL) | OOB_READ,
+		info->reg + NFCRd_OOB_CTRL);
+		//writeb((info->oob_ECC_bytes+1), info->reg + NFCR10_OOB_ECC_SIZE+1);
+		if (info->ECC_mode != info->oob_ECC_mode)
+			set_ecc_engine(info, info->oob_ECC_mode);
+		//pos = info->oob_col/*+ i * (eccsize + chunk);*/
+		//print_nand_register(mtd);
+		chip->cmdfunc(mtd, NAND_CMD_READOOB, info->oob_col, page);
+		if (info->ECC_mode != info->oob_ECC_mode)
+			set_ecc_engine(info, info->ECC_mode);
+		//writeb(info->oob_ECC_bytes, info->reg + NFCR10_OOB_ECC_SIZE+1);
+		writeb(readb(info->reg + NFCRd_OOB_CTRL) & (~OOB_READ),
+		info->reg + NFCRd_OOB_CTRL);
+	} else
+	#endif
+	{
+		info->data_ecc_uncor_err = 0;
+		info->oob_ecc_error = 0x50;
+	}
+	
+	if (info->data_ecc_uncor_err == 1 || info->oob_ecc_error == 0x50) {
+		if (info->data_ecc_uncor_err == 1)
+			printk(KERN_WARNING "**************page0x%x, read oob unc err goto read page\n", page);
+		info->isr_cmd = 0;
+		wmt_nand_page_read(mtd, 0, info->last_bank_col, page);
+		info->oob_ecc_error = 0;
+	}
+//print_nand_buffer((char *)(info->reg+ECC_FIFO_0), 16);
+	#ifdef WMT_RDMZ
+	rdmzier_oob((uint8_t *)&rdmz_mark, (uint8_t *)(info->reg+ECC_FIFO_5), 1, page, (mtd->writesize+20)/4);
+	//printk("re oob page=0x%x rdmz_mark=0x%x wmt_rdmz=0x%x fifo5=0x%x\n",page , rdmz_mark, *(unsigned int *)wmt_rdmz, *(unsigned int *)(info->reg+ECC_FIFO_5));
+	if (mtd->dwRdmz == 1 && rdmz_mark == *(unsigned int *)wmt_rdmz) {
+		rdmzier_oob(bufpoi, (uint8_t *)(info->reg+ECC_FIFO_0), 5, page, mtd->writesize/4);
+	}	else {
+	#endif
+		memcpy(bufpoi, info->dmabuf + mtd->writesize, 24);
+		//print_nand_buffer((char *)(chip->oob_poi), 32);
+		//print_nand_buffer((char *)(info->dmabuf + mtd->writesize), 32);
+		/*if (!(*(uint32_t *)(info->reg+ECC_FIFO_0) == 0xFFFFFFFF && *(uint32_t *)(info->reg+ECC_FIFO_1) == 0xFFFFFFFF
+		&& *(uint32_t *)(info->reg+ECC_FIFO_2) == 0xFFFFFFFF && *(uint32_t *)(info->reg+ECC_FIFO_3) == 0xFFFFFFFF
+		&& *(uint32_t *)(info->reg+ECC_FIFO_4) == 0xFFFFFFFF && *(uint32_t *)(info->reg+ECC_FIFO_5) == 0xFFFFFFFF)) {
+			printk("fail to derdmz oob roob page= 0x%x e\n", page);
+			print_nand_buffer((char *)(info->reg+ECC_FIFO_0), 32);
+			//rdmzier_oob((uint8_t *)(info->reg+ECC_FIFO_0), (uint8_t *)(info->reg+ECC_FIFO_0), 5, page, mtd->writesize/4);
+			//print_nand_buffer((char *)(info->reg+ECC_FIFO_0), 32);
+			//while(1);
+		}*/
+	}
+
+	return 1;
+}
+
+static int wmt_nand_read_oob(struct mtd_info *mtd, struct nand_chip *chip, int page, int sndcmd)
+{
+	struct wmt_nand_info *info = wmt_nand_mtd_toinfo(mtd);
 	/* int length = mtd->oobsize;  */ /* prepad = chip->ecc.prepad, bytes = chip->ecc.bytes;*/
 	/* int chunk = chip->ecc.bytes + chip->ecc.prepad + chip->ecc.postpad;*/
 	/* int eccsize = chip->ecc.size;*/
-	uint8_t *bufpoi = buf;
+	uint8_t *bufpoi = chip->oob_poi;
 	/* struct nand_oobfree *free = chip->ecc.layout->oobfree;*/
 	/* uint32_t boffs;*/
 	/* int pos;   */ /* toread, sndrnd = 1;*/
@@ -3895,7 +4220,7 @@ static int wmt_nand_read_oob(struct mtd_info *mtd, struct nand_chip *chip, int p
 	#endif
 	/* info->datalen = mtd->writesize;*/  /* oob data is placed in after info->dmabuf[2047]  */
 
-	
+	info->unc_allFF = 0;	
 	// read redundant area cmd
 	//printk(KERN_NOTICE "scan oob page=%d\n", page);
 	info->oob_ecc_error = 0x0;
@@ -3938,7 +4263,11 @@ static int wmt_nand_read_oob(struct mtd_info *mtd, struct nand_chip *chip, int p
 		rdmzier_oob(bufpoi, (uint8_t *)(info->reg+ECC_FIFO_0), 5, page, mtd->writesize/4);
 	}	else {
 	#endif
-		memcpy(bufpoi, info->reg+ECC_FIFO_0, 20);
+	    if (info->unc_allFF == 1 || info->unc_allFF == ((1<<info->banks)-1)) {
+    	    set_FIFO_FF((uint32_t *)(bufpoi), 4);
+	    } else {
+			memcpy(bufpoi, info->reg+ECC_FIFO_0, 20);
+		}
 		/*if (!(*(uint32_t *)(info->reg+ECC_FIFO_0) == 0xFFFFFFFF && *(uint32_t *)(info->reg+ECC_FIFO_1) == 0xFFFFFFFF
 		&& *(uint32_t *)(info->reg+ECC_FIFO_2) == 0xFFFFFFFF && *(uint32_t *)(info->reg+ECC_FIFO_3) == 0xFFFFFFFF
 		&& *(uint32_t *)(info->reg+ECC_FIFO_4) == 0xFFFFFFFF && *(uint32_t *)(info->reg+ECC_FIFO_5) == 0xFFFFFFFF)) {
@@ -3994,7 +4323,7 @@ static int wmt_nand_read_bb_oob(struct mtd_info *mtd, struct nand_chip *chip,
 int page, int sndcmd)
 {
 	unsigned int bch, bak_time;
-	int i, size = 1024;
+	int i, size = 1024, ofs = mtd->writesize;
 	struct wmt_nand_info *info = wmt_nand_mtd_toinfo(mtd);
 	#ifdef NAND_DEBUG
 	printk(KERN_NOTICE "enter in wmt_nand_read_bb_oob() page=0x%x\n", page);
@@ -4004,24 +4333,29 @@ int page, int sndcmd)
 	writeb(READ_RESUME,	info->reg + NFCR9_ECC_BCH_CTRL + 1);
 	bak_time = readl(info->reg + NFCR14_READ_CYCLE_PULE_CTRL);
 	writel(0x2424,	info->reg + NFCR14_READ_CYCLE_PULE_CTRL);
+
+	if ((mtd->pageSizek >> (ffs(mtd->pageSizek)-1)) != 1) {
+		ofs = ofs + 2048;
+	}
+
 	if (sndcmd) {
 		if ((mtd->id>>24) == 0x45) {
-			for (i = 0; i < ((mtd->writesize/1024)+1); i++) {
+			for (i = 0; i < ((ofs/1024)+1); i++) {
 				chip->cmdfunc(mtd, NAND_CMD_READ0, i*1024, page);
 				info->datalen = 0;
-				if (i == (mtd->writesize/1024))
+				if (i == (ofs/1024))
 					size = (mtd->oobsize >= 1024) ? 1024 : mtd->oobsize;
-				chip->read_buf(mtd, chip->oob_poi - mtd->writesize + (i*1024), size);
+				chip->read_buf(mtd, chip->oob_poi - ofs + (i*1024), size);
 			}
 		} else if (mtd->id == 0xECDED57E && mtd->id2 == 0x68440000) {
 			chip->cmdfunc(mtd, NAND_CMD_READ0, 0, page);
 			info->datalen = 0;
 			chip->read_buf(mtd, chip->oob_poi, 1);
-			chip->cmdfunc(mtd, NAND_CMD_READ0, mtd->writesize, page);
+			chip->cmdfunc(mtd, NAND_CMD_READ0, ofs, page);
 			info->datalen = 0;
 			chip->read_buf(mtd, chip->oob_poi+1, 63);
 		} else {
-			chip->cmdfunc(mtd, NAND_CMD_READ0, mtd->writesize, page);
+			chip->cmdfunc(mtd, NAND_CMD_READ0, ofs, page);
 			info->datalen = 0;
 			chip->read_buf(mtd, chip->oob_poi, 64);
 		}
@@ -4494,6 +4828,13 @@ unsigned int wmt_bchencoder (unsigned char *data, unsigned char *bch_code, unsig
 }
 #endif //end of #if 0 : slow encode function
 
+void set_FIFO_FF(unsigned int *buf, int size)                                                                                                
+{
+    int i;
+    for (i = 0; i < size; i++)
+        buf[i] = 0xFFFFFFFF;
+} 
+
 /**
  * wmt_nand_read_page - hardware ecc syndrom based page read
  * @mtd:	mtd info structure
@@ -4507,6 +4848,7 @@ static int wmt_nand_read_page(struct mtd_info *mtd, struct nand_chip *chip,
 						 uint8_t *buf, int page)
 {
 	struct wmt_nand_info *info = wmt_nand_mtd_toinfo(mtd);
+	uint8_t *bufpoi = chip->oob_poi; 
 	#ifdef WMT_RDMZ
 	unsigned int rdmz_mark = 0;
 	#endif
@@ -4514,11 +4856,15 @@ static int wmt_nand_read_page(struct mtd_info *mtd, struct nand_chip *chip,
 		printk(KERN_NOTICE "\r enter in wmt_nand_read_page()page=0x%x\n", page);
 	#endif
 	info->datalen = 0;
-	chip->read_buf(mtd, buf, mtd->writesize);
+    if (info->unc_allFF == ((1<<info->banks)-1)) {
+        set_FIFO_FF((uint32_t *)buf, mtd->writesize/4);
+    } else
+        chip->read_buf(mtd, buf, mtd->writesize);
+
 	#ifdef WMT_RDMZ
 	if (chip->cur_chip && prob_end == 1 &&
 		(chip->cur_chip->nand_id>>24) == NAND_MFR_HYNIX) {
-			if (page < par3_ofs || (page >= par6_ofs && page < par7_ofs)) {
+			if (page < par4_ofs && second_chip == 0) {
 				#ifdef ESLC_DEBUG
 				if (page%mtd->pagecnt == 0 || page%mtd->pagecnt == (mtd->pagecnt/2))
 					printk("\nread: \n");
@@ -4528,6 +4874,7 @@ static int wmt_nand_read_page(struct mtd_info *mtd, struct nand_chip *chip,
 					return 0;
 			}
 	}
+
 	if (mtd->dwRdmz == 1) {
 		rdmzier_oob((uint8_t *)&rdmz_mark, (uint8_t *)(info->reg+ECC_FIFO_5), 1, page, (mtd->writesize+20)/4);
 		if ((*(unsigned int *)(info->reg+ECC_FIFO_5)) == (*(unsigned int *)wmt_rdmz) ||
@@ -4546,12 +4893,38 @@ static int wmt_nand_read_page(struct mtd_info *mtd, struct nand_chip *chip,
 		rdmzier_oob((uint8_t *)chip->oob_poi, (uint8_t *)(info->reg+ECC_FIFO_0), 5/*20/4*/, page, mtd->writesize/4);
 	}	else
 	#endif
-		memcpy(chip->oob_poi, info->reg+ECC_FIFO_0, 20);
+    if (info->unc_allFF == ((1<<info->banks)-1)) {                                                                                           
+        set_FIFO_FF((uint32_t *)(bufpoi), 4);
+    } else
+        memcpy(bufpoi, info->reg+ECC_FIFO_0, 20);
 	
  /*   memcpy(chip->oob_poi, info->reg+ECC_FIFO_0, mtd->oobavail);*/
  /*   chip->read_buf(mtd, chip->oob_poi, mtd->oobavail); */  /* ????  */
 	return 0;
 }
+
+/**
+ * wmt_nand_read_page - hardware ecc syndrom based page read
+ * @mtd:	mtd info structure
+ * @chip:	nand chip info structure
+ * @buf:	buffer to store read data
+ *
+ * The hw generator calculates the error syndrome automatically. Therefor
+ * we need a special oob layout and handling.
+ */
+static int wmt_nand_read_page_noalign(struct mtd_info *mtd, struct nand_chip *chip,
+						 uint8_t *buf, int page)
+{
+	struct wmt_nand_info *info = wmt_nand_mtd_toinfo(mtd);
+	info->datalen = 0;
+	chip->read_buf(mtd, buf, mtd->writesize);
+	
+
+		memcpy(chip->oob_poi, info->dmabuf + mtd->writesize, 20);
+	return 0;
+}
+
+
 extern unsigned int wmt_read_oscr(void);
 int hw_encode_oob(struct mtd_info *mtd)
 {
@@ -4606,6 +4979,24 @@ int hw_encode_oob(struct mtd_info *mtd)
 		writeb(tmp, info->reg + NFCR9_ECC_BCH_CTRL);
 
 	return ret;
+}
+
+static void wmt_nand_write_page_lowlevel_noalign(struct mtd_info *mtd, struct nand_chip *chip, const uint8_t *buf)
+{
+	struct wmt_nand_info *info = wmt_nand_mtd_toinfo(mtd);
+	unsigned int b2r_stat;
+	#ifdef NAND_DEBUG
+	printk(KERN_NOTICE "enter in wmt_nand_page_write_lowlevel() writesize %x\n", mtd->writesize);
+	#endif
+	info->dma_finish = 0;
+	b2r_stat = readb(info->reg + NFCRb_NFC_INT_STAT);
+	writeb(B2R|b2r_stat, info->reg + NFCRb_NFC_INT_STAT);
+	writeb(0x1B, info->reg + NFCR13_INT_MASK);
+	info->datalen = 0;
+	chip->write_buf(mtd, buf, mtd->writesize);
+	memcpy(info->dmabuf + mtd->writesize, chip->oob_poi, 24);
+	memset(info->dmabuf + mtd->writesize+24, 0x55, 24);
+	wmt_nfc_dma_cfg(mtd, mtd->writesize+1024, 1, 0, -1);  /*  2048bytes  */
 }
 
 //extern unsigned int wmt_read_oscr(void);
@@ -4757,43 +5148,51 @@ const uint8_t *buf, int page, int cached, int raw)
 	uint8_t *tmp_buf = (uint8_t *)buf;
 	struct wmt_nand_info *info = wmt_nand_mtd_toinfo(mtd);
 	#ifdef NAND_DEBUG
-	printk(KERN_NOTICE "enter in wmt_nand_write_page() raw = %d\n", raw);
+	printk(KERN_NOTICE "enter in wmt_nand_write_page()\n");
+	printk(KERN_NOTICE "raw = %d\n", raw);
 	#endif
 
 	if (chip->cur_chip && (chip->cur_chip->nand_id>>24) == NAND_MFR_HYNIX /*&& mtd->dwRetry*/) {
 		#ifdef ESLC_READ_WRITE
-		#ifdef ELSC_DEBUG
-		int ori_page = page;
-		#endif
-		if (page < par3_ofs || (page >= par6_ofs && page < par7_ofs)
-		|| (page >= (mtd->blkcnt-8)*mtd->pagecnt)) {
-			if (page < (mtd->blkcnt-8)*mtd->pagecnt) {
-				page = hynix_eslc_page_address_calculate(mtd, chip, page);
-				if (page < 0)
-					return 0;
-				if (page%(mtd->pagecnt/2) == 0) {
-					chip->cmdfunc(mtd, NAND_CMD_ERASE1, -1, page);
-					chip->cmdfunc(mtd, NAND_CMD_ERASE2, -1, -1);
-					#ifdef ESLC_DEBUG
-					printk("eslc erase page=0x%x => eslc page = 0x%x when write.\n", orig_page, page);
-					#endif
-				}
+		int orig_page = page;
+		if (page < par4_ofs && second_chip == 0) {
+			#ifdef ESLC_DEBUG
+			if (page%mtd->pagecnt == 0 || page%mtd->pagecnt == (mtd->pagecnt/2))
+				printk("\nwrite: \n");
+			#endif
+			page = hynix_eslc_page_address_calculate(mtd, chip, page);
+			if (page < 0)
+				return 0;
+
+			if(page%(mtd->pagecnt/2) == 0) {
+				chip->cmdfunc(mtd, NAND_CMD_ERASE1, -1, page);
+				chip->cmdfunc(mtd, NAND_CMD_ERASE2, -1, -1);
+				#ifdef ESLC_DEBUG
+				printk("eslc erase page=0x%x => eslc page = 0x%x when write.\n", orig_page, page);
+				#endif
 			}
+
 			if (eslc_write != 2) {
 				eslc_write = 2;
 				chip->cur_chip->set_parameter(mtd, ESLC_MODE, ECC_ERROR_VALUE);
-				#ifdef ELSC_DEBUG
-				printk(KERN_WARNING "page=0x%x----ENABLE ESLC", ori_page);
+				#ifdef ESLC_DEBUG
+				printk(KERN_WARNING "page=0x%x----ENABLE ESLC", orig_page);
+				#endif
 				if (page >= (mtd->blkcnt-8)*mtd->pagecnt)
 					printk(KERN_WARNING "(BBT)\n");	else printk(KERN_WARNING "\n");
+			}
+		} else if(page >= (mtd->blkcnt-8)*mtd->pagecnt) {
+			if (eslc_write != 2) {
+				#ifdef ELSC_DEBUG
+				printk(KERN_NOTICE "page=0x%x----ENABLE ESLC(BBT)\n", page);
 				#endif
+				eslc_write = 2;
+				chip->cur_chip->set_parameter(mtd, ESLC_MODE, ECC_ERROR_VALUE);
 			}
 		} else if (eslc_write == 2) {
 			chip->cur_chip->set_parameter(mtd, ESLC_MODE, DEFAULT_VALUE);
 			eslc_write = 0;
-			#ifdef ELSC_DEBUG
 			printk(KERN_NOTICE "page=0x%x****DIS ESLC\n", page);
-			#endif
 		}
 		#endif
 	}
@@ -4813,7 +5212,10 @@ const uint8_t *buf, int page, int cached, int raw)
 	#endif
 
 	info->datalen = 0;
-	chip->ecc.write_page(mtd, chip, tmp_buf);
+	if ((mtd->pageSizek >> (ffs(mtd->pageSizek)-1)) != 1)
+		wmt_nand_write_page_lowlevel_noalign(mtd, chip, tmp_buf);
+	else
+		chip->ecc.write_page(mtd, chip, tmp_buf);
 
 	chip->cmdfunc(mtd, NAND_CMD_SEQIN, 0x00, page);
 	status = nand_pdma_handler(mtd);
@@ -4846,8 +5248,10 @@ const uint8_t *buf, int page, int cached, int raw)
 		if ((status & NAND_STATUS_FAIL) && (chip->errstat))
 			status = chip->errstat(mtd, chip, FL_WRITING, status,	page);
 
-		if (status & NAND_STATUS_FAIL)
+		if (status & NAND_STATUS_FAIL) {
+			printk("write fail\n");
 			goto GO_EIO;//return -EIO;
+		}
 	} else {
 		chip->cmdfunc(mtd, NAND_CMD_CACHEDPROG, -1, -1);
 
@@ -4949,6 +5353,11 @@ struct ECC_size_info *ECC_size)
 		chip->ecc.write_oob = wmt_nand_write_oob;
 		chip->ecc.read_page = wmt_nand_read_page;
 		chip->ecc.read_oob = wmt_nand_read_oob;
+		if ((mtd->pageSizek >> (ffs(mtd->pageSizek)-1)) != 1)
+			chip->ecc.read_oob = wmt_nand_read_oob_noalign;
+
+		if ((mtd->pageSizek >> (ffs(mtd->pageSizek)-1)) != 1)
+			chip->ecc.read_page = wmt_nand_read_page_noalign;
 
 		chip->ecc.read_bb_oob = wmt_nand_read_bb_oob;
 
@@ -5015,35 +5424,31 @@ static int wmt_nand_remove(struct platform_device *pdev)
 	kfree(info);
 	if (buf_rdmz)
 		vfree(buf_rdmz);
+	remove_proc_entry(NANDINFO, NULL);
 	return 0;
 }
 
-int search_mtd_table(char *string, char *ret)
-{
-	int i, err = 0;
-	for (i = 0; i < MAX_MTD_DEVICES; i++) {
-		if (!&nand_partitions[i]) {
-			err = 1;
-			break;
-		}
-		printk(KERN_DEBUG "MTD dev%d size: %8.8llx \"%s\"\n",
-		i, nand_partitions[i].size, nand_partitions[i].name);
-		if (strcmp(string, nand_partitions[i].name) == 0) {
-			*ret = i;
-			break;
-		}
-	}
-	return err;
-}
-	
+#if 0
 /*Lch */
 static int wmt_recovery_call(struct notifier_block *nb, unsigned long code, void *_cmd)
 {
-	/*struct mtd_info *mtd;
-	int err = 0, ret = 0;
-	char ret1 = 0;*/
-	printk(KERN_EMERG "Lch enter wmt_recovery_call.\n");
-#if 0
+	struct mtd_info *mtd;
+	struct nand_chip *chip;
+
+	mtd = container_of(nb, struct mtd_info, reboot_notifier);
+	chip = (struct nand_chip *)mtd->priv;
+	if(chip->cur_chip && (((mtd->id >>24)&0xff) == NAND_MFR_HYNIX)) {
+		*(volatile unsigned long *)PMCEU_ADDR |= (0x0010000);
+		#ifdef RETRY_DEBUG
+		printk("current try times: %d\n", chip->cur_chip->cur_try_times);
+		#endif
+		chip->select_chip(mtd, 0);
+		chip->cur_chip->set_parameter(mtd, READ_RETRY_MODE, DEFAULT_VALUE);
+		//chip->cur_chip->get_parameter(mtd,READ_RETRY_MODE);
+		chip->select_chip(mtd, -1);
+	}
+	return NOTIFY_DONE;
+
 	mtd = container_of(nb, struct mtd_info, reboot_notifier);
 
 	if((code == SYS_RESTART) && _cmd) {
@@ -5092,9 +5497,9 @@ static int wmt_recovery_call(struct notifier_block *nb, unsigned long code, void
 			}
 		}
 	}
-#endif
 	return NOTIFY_DONE;
 }
+#endif
 
 /**********************************************************************
 Name  	 : nfc_pdma_isr
@@ -5109,8 +5514,24 @@ static irqreturn_t nfc_pdma_isr(int irq, void *dev_id)
 {
 	struct wmt_nand_info *info = (struct wmt_nand_info *)dev_id;
 	struct mtd_info	*mtd = &info->mtds->mtd;
+	unsigned int pdma_st = 0;
+
+	pdma_st = readl(info->reg + NFC_DMA_ISR);
+	if(!(pdma_st&NAND_PDMA_IER_INT_STS)) {
+		printk("not nand pdma isr enter.\n");
+		print_nand_register(mtd);
+		//while(1);
+		return IRQ_NONE;
+	}
+	
 	disable_irq_nosync(irq);
 	//spin_lock(&host->lock);
+	writel(pdma_st&NAND_PDMA_IER_INT_STS, info->reg + NFC_DMA_ISR);
+	if(readl(info->reg + NFC_DMA_ISR)&NAND_PDMA_IER_INT_STS) {
+		printk("pdma isr not clear 0x%x\n", readl(info->reg + NFC_DMA_ISR));
+		print_nand_register(mtd);
+		//while(1);
+	}
 	writel(0, info->reg + NFC_DMA_IER);
 	wmb();
 	//writel(/*readl(info->reg + NFC_DMA_ISR)&*/NAND_PDMA_IER_INT_STS, info->reg + NFC_DMA_ISR);
@@ -5122,9 +5543,7 @@ static irqreturn_t nfc_pdma_isr(int irq, void *dev_id)
 		printk(" pdmaisr finish pointer is null info->dma_finish=%d\n", info->dma_finish);
 		print_nand_register(mtd);
 		dump_stack();
-		//while(1);
-	}
-	if (info->done_data != NULL) {
+	} else {
 		complete(info->done_data);
 		info->done_data = NULL;
 	}
@@ -5150,34 +5569,52 @@ irqreturn_t nfc_regular_isr(int irq, void *dev_id)
 
 	struct wmt_nand_info *info = dev_id;
 	struct mtd_info	*mtd = &info->mtds->mtd;
-	unsigned int bank_stat1, bank_stat2=0,status = 0, intsts;
+	unsigned int bank_stat1, bank_stat2=0,status = 0;
+
+	bank_stat1 = readb(info->reg + NFCRb_NFC_INT_STAT);
+//	printk("bank_stat1 = 0x%x ", bank_stat1);
+	if(!(bank_stat1&(B2R | ERR_CORRECT | BCH_ERR))) {
+		printk("Not regular interrupt enter.\n");
+		print_nand_register(mtd);
+		//while(1);
+		return IRQ_NONE;
+	}
 
 	disable_irq_nosync(irq);
 	//spin_lock(&host->lock);
 	//printk("isrCMD=0x%x\n", info->isr_cmd);
 	if (info->isr_cmd == 0) {
-		//print_nand_register(mtd);
 		bank_stat1 = readb(info->reg + NFCRb_NFC_INT_STAT);
+	//	printk("rp 0x%x ", bank_stat1);
 		if (bank_stat1&(ERR_CORRECT | BCH_ERR)) {
 			while ((bank_stat1&(ERR_CORRECT|BCH_ERR)) != (ERR_CORRECT|BCH_ERR)) {
 				bank_stat1 = readb(info->reg + NFCRb_NFC_INT_STAT);
+				//printk(" 0x%x polling", bank_stat1);
 				bank_stat2++;
 				if (bank_stat2 >= 0x10000) {
 					printk("ecc error, but ecc correct not assert ecc status=0x%x\n",bank_stat1);
 					print_nand_register(mtd);
 					//while(1);
-					break;
 				}
 			}
-			writeb((B2R | ERR_CORRECT | BCH_ERR), info->reg + NFCRb_NFC_INT_STAT);
+	//		printk(" 0x%x\n", bank_stat1);
+			writeb(bank_stat1, info->reg + NFCRb_NFC_INT_STAT);
+			//writeb((B2R | ERR_CORRECT | BCH_ERR), info->reg + NFCRb_NFC_INT_STAT);
 			bank_stat2 = readw(info->reg + NFCR9_ECC_BCH_CTRL);
 			#ifdef NAND_DEBUG
 			printk(KERN_NOTICE" BCH Read data ecc eror page_addr:%x cmd=%d\n", info->cur_page, info->isr_cmd);
 			#endif
-			if (bank_stat2 & BANK_DR)
-				bch_data_last_bk_ecc_correct(mtd);
-			else
-				bch_data_ecc_correct(mtd);
+			if ((bank_stat2 & BANK_DR) || info->oob_ecc_error == 0x50) {
+				if ((mtd->pageSizek >> (ffs(mtd->pageSizek)-1)) != 1)
+					bch_data_last_bk_ecc_correct_noalign(mtd);
+				else
+					bch_data_last_bk_ecc_correct(mtd);
+			} else {
+				if ((mtd->pageSizek >> (ffs(mtd->pageSizek)-1)) != 1)
+					bch_data_ecc_correct_noalign(mtd);
+				else
+					bch_data_ecc_correct(mtd);
+			}
 		} else {
 			printk("read page error but not ecc error sts=0x%x\n",bank_stat1);
 			print_nand_register(mtd);
@@ -5187,33 +5624,39 @@ irqreturn_t nfc_regular_isr(int irq, void *dev_id)
 		//print_nand_register(mtd);
 		wmt_wait_nfc_ready(info);
 		bank_stat1 = readb(info->reg + NFCRb_NFC_INT_STAT);
+	//	printk("ro 0x%x", bank_stat1);
 		if (bank_stat1&(ERR_CORRECT | BCH_ERR)) {
 			while ((bank_stat1&(ERR_CORRECT|BCH_ERR)) != (ERR_CORRECT|BCH_ERR)) {
 				bank_stat2++;
 				bank_stat1 = readb(info->reg + NFCRb_NFC_INT_STAT);
+				//printk(" 0x%x polling", bank_stat1);
 				if (bank_stat2 >= 0x10000) {
 					printk("oob ecc error, but ecc correct not assert ecc status=0x%x\n",bank_stat1);
 					print_nand_register(mtd);
 					//while(1);
-					break;
 				}
 			}
+	//		printk(" 0x%x\n", bank_stat1);
 			bank_stat2 = readb(info->reg + NFCRd_OOB_CTRL)&OOB_READ;
 			if (!bank_stat2)
 				printk("oob cmd error, but oob flag is not set\n");
 			bch_redunt_ecc_correct(mtd);
-		}
-		writeb((B2R | ERR_CORRECT | BCH_ERR), info->reg + NFCRb_NFC_INT_STAT);
+		} 
+		writeb(bank_stat1, info->reg + NFCRb_NFC_INT_STAT);
+		//writeb((B2R | ERR_CORRECT | BCH_ERR), info->reg + NFCRb_NFC_INT_STAT);
 		status = NFC_WAIT_IDLE(mtd);
 		if (status)
 			printk("B2R isr not ecc error occurs, but idle fail\n");
 		WARN_ON(info->done_data == NULL);
+		if(info->done_data == NULL)
+			print_nand_register(mtd);
 		complete(info->done_data);
 		info->done_data = NULL;
-	} else /*if (info->isr_cmd != 0 && info->isr_cmd != 0x50) */{
+	} else {
 		/* only erase/write operation enter for B2R interrupt */
-		intsts = readb(info->reg + NFCRb_NFC_INT_STAT);
-		if (intsts&B2R) {
+		bank_stat1 = readb(info->reg + NFCRb_NFC_INT_STAT);
+	//	printk("ew 0x%x\n", bank_stat1);
+		if (bank_stat1&B2R) {
 			writeb(B2R, info->reg + NFCRb_NFC_INT_STAT);
 			if (readb(info->reg + NFCRb_NFC_INT_STAT) & B2R)
 				printk("[nfc_isr] erase/write cmd B2R staus can't clear\n");
@@ -5227,6 +5670,7 @@ irqreturn_t nfc_regular_isr(int irq, void *dev_id)
 			print_nand_register(mtd);
 			//while(info->isr_cmd);
 		}
+		//writeb(status&4, info->reg + NFCR13_INT_MASK);//need it??
 
 		WARN_ON(info->done_data == NULL);
 		complete(info->done_data);
@@ -5240,7 +5684,7 @@ irqreturn_t nfc_regular_isr(int irq, void *dev_id)
 
 static void wmt_set_logo_offset(void)
 {
-	char ret1;
+	int ret1;
 	int err = 0, ret = 0, status = 0, i;
 	unsigned char varval[100], tmp[100];
 	unsigned int varlen;
@@ -5337,7 +5781,9 @@ void set_ecc_info(struct mtd_info *mtd)
 	struct wmt_nand_info *info = wmt_nand_mtd_toinfo(mtd);
 
 	ecc_bit_mode = mtd->dwECCBitNum;
-	if (ecc_bit_mode > 24)
+	if (ecc_bit_mode > 40)
+		ecc_bit_mode = (ecc_bit_mode == 60) ? 7 : (-1);
+	else if (ecc_bit_mode > 24)
 		ecc_bit_mode = (ecc_bit_mode == 40) ? 6 : (-1);
 	else
 		ecc_bit_mode = (ecc_bit_mode > 16) ? ((ecc_bit_mode/4) - 1) : (ecc_bit_mode/4);
@@ -5346,9 +5792,15 @@ void set_ecc_info(struct mtd_info *mtd)
 	calculate_ECC_info(mtd, &ECC_size);
 	writew((ECC_size.oob_ECC_bytes<<8) /*+ (ECC_size.unprotect&0xFF)*/, info->reg + NFCR10_OOB_ECC_SIZE);
 	info->oob_ECC_bytes = ECC_size.oob_ECC_bytes;
-	info->last_bank_dmaaddr = info->dmaaddr + mtd->writesize - ECC_size.bank_size;
-	info->oob_col = mtd->writesize + (ECC_size.ECC_bytes * (ECC_size.banks-1));
-	info->last_bank_col = info->oob_col - ECC_size.bank_size;
+	if ((mtd->pageSizek >> (ffs(mtd->pageSizek)-1)) != 1) {
+		info->last_bank_dmaaddr = info->dmaaddr + mtd->writesize;
+		info->oob_col = mtd->writesize + (ECC_size.ECC_bytes * ECC_size.banks);
+		info->last_bank_col = info->oob_col;
+	} else {
+		info->last_bank_dmaaddr = info->dmaaddr + mtd->writesize - ECC_size.bank_size;
+		info->oob_col = mtd->writesize + (ECC_size.ECC_bytes * (ECC_size.banks-1));
+		info->last_bank_col = info->oob_col - ECC_size.bank_size;
+	}
 	info->oob_ECC_mode = ECC_size.oob_ECC_mode;
 	info->oob_ecc_error = 0;
 	info->banks = ECC_size.banks;
@@ -5368,41 +5820,71 @@ void set_ecc_info(struct mtd_info *mtd)
 
 void set_partition_size(struct mtd_info *mtd)
 {
-	//int i;
+	int ret, index;
+	char varval[256], partition_name[32];
+	int varlen = 256;
+	char *s = NULL, *tmp = NULL;
+	uint64_t part_size = 0;
 	struct nand_chip *chip = mtd->priv;
-	/*uint64_t min_partition_size;
-	
-	min_partition_size = ((mtd->erasesize * 4) < 0x200000) ? 0x200000 : (mtd->erasesize * 4);
-	nand_partitions[0].size = min_partition_size;
-	nand_partitions[1].size = min_partition_size;
-	nand_partitions[2].size = 0x400000;
-	nand_partitions[3].size = 0x8000000;
-	nand_partitions[4].size = 0x20000000;
-	nand_partitions[5].size = 0x1000000;
-	nand_partitions[6].size = 0x1000000;
-	nand_partitions[7].size = min_partition_size;
-	nand_partitions[8].size = min_partition_size;
-	nand_partitions[9].size = min_partition_size;
-	nand_partitions[10].size = 0x8000000;
-	nand_partitions[11].size = MTDPART_SIZ_FULL;*/
 
-	par1_ofs = nand_partitions[0].size;
-	par2_ofs = par1_ofs + nand_partitions[1].size;
-	par3_ofs = par2_ofs + nand_partitions[2].size;
-	par6_ofs = par3_ofs + nand_partitions[3].size + nand_partitions[4].size + nand_partitions[5].size;
-	par7_ofs = par6_ofs + nand_partitions[6].size;
+	if(((mtd->id>>24)&0xff) == NAND_MFR_HYNIX) {
+		nand_partitions[0].size = 0x2000000;
+		nand_partitions[1].size = 0x2000000;
+		nand_partitions[2].size = 0x2000000;
+	}
 
-	par1_ofs = par1_ofs >> chip->page_shift;
-	par2_ofs = par2_ofs >> chip->page_shift;
-	par3_ofs = par3_ofs >> chip->page_shift;
-	par6_ofs = par6_ofs >> chip->page_shift;
-	par7_ofs = par7_ofs >> chip->page_shift;
-	/*par2_ofs = par2_ofs >> (chip->phys_erase_shift - chip->page_shift);
-	par3_ofs = par3_ofs >> (chip->phys_erase_shift - chip->page_shift);
-	par6_ofs = par6_ofs >> (chip->phys_erase_shift - chip->page_shift);
-	par7_ofs = par7_ofs >> (chip->phys_erase_shift - chip->page_shift);*/
-	printk("*****************************p1=0x%x, p2=0x%x, p3=0x%x, p6=0x%x, p7=0x%x\n",
-	par1_ofs, par2_ofs, par3_ofs, par6_ofs, par7_ofs);
+	if ((mtd->pageSizek >> (ffs(mtd->pageSizek) - 1)) != 1) {
+		nand_partitions[0].size = 0x1080000;
+		nand_partitions[1].size = 0x1080000;
+		nand_partitions[2].size = 0x1080000;
+		nand_partitions[3].size = 0x1080000;
+		nand_partitions[4].size = 0x4200000;
+		nand_partitions[5].size = 0x30000000;
+		nand_partitions[6].size = 0x20100000;
+		nand_partitions[7].size = MTDPART_SIZ_FULL;
+		//printk("(pageSizek>>(ffs(pageSizek)-1)=%d\n", mtd->pageSizek >> (ffs(mtd->pageSizek)-1));
+	}
+
+	ret = wmt_getsyspara("wmt.nand.partition", varval, &varlen);
+	if(ret == 0) {
+		printk("wmt.nand.partition: %s\n", varval);
+		s = varval;
+		while(*s != '\0')
+		{
+			index = NUM_NAND_PARTITIONS;
+			memset(partition_name, 0, 32);
+			get_partition_name(s, &tmp, partition_name);
+			search_mtd_table(partition_name, &index);
+			s = tmp + 1;
+			part_size = simple_strtoul(s, &tmp, 16);
+			s = tmp;
+			if(*s == ':')
+				s++;
+
+			//data can't be resized by uboot env, its size is left whole nand.
+			if((index >= 0) &&  (index < (NUM_NAND_PARTITIONS-1)) && (part_size < chip->chipsize)) { 
+				nand_partitions[index].size = part_size;
+			} else {
+				printk("Invalid parameter \"wmt.nand.partition\". Use default partition size for \"%s\" partition.\n", partition_name);
+			}
+		}
+	}
+
+
+
+	if(((mtd->id>>24)&0xff) == NAND_MFR_HYNIX) {
+		par1_ofs = nand_partitions[0].size;
+		par2_ofs = par1_ofs + nand_partitions[1].size;
+		par3_ofs = par2_ofs + nand_partitions[2].size;
+		par4_ofs = par3_ofs + nand_partitions[3].size;
+
+		par1_ofs = par1_ofs >> chip->page_shift;
+		par2_ofs = par2_ofs >> chip->page_shift;
+		par3_ofs = par3_ofs >> chip->page_shift;
+		par4_ofs = par4_ofs >> chip->page_shift;
+	}
+
+
 
 	/*min_partition_size = 0;
 	for (i = 0; i < 11; i++)
@@ -5422,6 +5904,42 @@ int alloc_rdmz_buffer(struct mtd_info *mtd)
 	return 0;
 }
 
+static int nandinfo_proc_read(char *page, char **start, off_t off, int count, int *eof, void *data) {
+	char mfr_name[32];
+	int len = 0;
+	int mfr =(mtd_nandinfo->id>>24)&0xff;
+
+	switch(mfr) {
+	case NAND_MFR_SANDISK:
+		strcpy(mfr_name, "Sandisk");
+		break;
+	case NAND_MFR_HYNIX:
+		strcpy(mfr_name, "Hynix");
+		break;
+	case NAND_MFR_TOSHIBA:
+		strcpy(mfr_name, "Toshiba");
+		break;
+	case NAND_MFR_SAMSUNG:
+		strcpy(mfr_name, "Samsung");
+		break;
+	case NAND_MFR_MICRON:
+		strcpy(mfr_name, "Micron");
+		break;
+	case NAND_MFR_INTEL:
+		strcpy(mfr_name, "Intel");
+		break;
+	default:
+		strcpy(mfr_name, "Unknown");
+		break;
+	}
+
+	len = sprintf(page, "Manufacturer    : %s\n"
+						"nand id1        : %lu\n"
+						"nand id2        : %lu\n" , mfr_name, mtd_nandinfo->id, mtd_nandinfo->id2);
+	return len;
+}
+
+extern  int wmt_recovery_call(struct notifier_block *nb, unsigned long code, void *_cmd);
 static int wmt_nand_probe(struct platform_device *pdev)
 {
 	/* struct wmt_platform_nand *plat = to_nand_plat(pdev);*/
@@ -5445,16 +5963,22 @@ static int wmt_nand_probe(struct platform_device *pdev)
 	buf_rdmz =  NULL;
 	prob_end = 0;
 	eslc_write = 0;
-	part_wr = 0;
 	/*	int nr_sets;*/
 	/*	int setno;*/
 	pr_debug("wmt_nand_probe(%p)\n", pdev);
+	ret = wmt_getsyspara("wmt.boot.dev", sd_buf, &sd_varlen);
+	printk("wmt.boot.dev ret = %d\n", ret);
+	if(!ret && (!strncmp(sd_buf, "TF", 2) || (!strncmp(sd_buf, "UDISK", 5))))
+	{
+		printk("Boot from SD  card or udisk card.\n");
+		return -1;
+	}
 
 	/*Read system param to identify host function 0: SD/MMC 1:SDIO wifi*/
    ret = wmt_getsyspara(varname, sd_buf, &sd_varlen);
 	if (ret == 0) {
 		sscanf(sd_buf,"%d:%d", &sd_enable,&SD1_function);
-		if ((sd_enable&1) == 1) {
+		if (sd_enable == 1) {
 			printk(KERN_NOTICE "SD1 enabled => NAND probe disabled\n");
 			return -EINVAL;
 		}
@@ -5642,21 +6166,24 @@ static int wmt_nand_probe(struct platform_device *pdev)
 		}
 	}
 
-	wmt_set_logo_offset();
+	//wmt_set_logo_offset();
 
 	/* write back mtd partition to env */
 	/* wmt_set_partition_info(&nmtd->chip); */
 
-	register_reboot_notifier(&mtd->reboot_notifier);//Lch
-
-	if (((mtd->id>>24)&0xFF) == NAND_MFR_HYNIX) {
-		auto_pll_divisor(DEV_NAND, CLK_ENABLE, 0, 0);
-		writel(0x1312,	info->reg + NFCR14_READ_CYCLE_PULE_CTRL);
-		printk("prob_end timing=%x\n",readl(info->reg + NFCR14_READ_CYCLE_PULE_CTRL));
-		auto_pll_divisor(DEV_NAND, CLK_DISABLE, 0, 0);
+	nandinfo_proc = create_proc_entry(NANDINFO, 0666, NULL);
+	if(nandinfo_proc == NULL) {
+		printk("Failed to create nandinfo proccess device\n");
+		goto out_free_dma;
+	} else {
+		mtd_nandinfo = mtd;
 	}
+	nandinfo_proc->read_proc = nandinfo_proc_read;
+
+	register_reboot_notifier(&mtd->reboot_notifier);//Lch
 	printk(KERN_NOTICE "nand initialised ok\n");
 	prob_end = 1;
+	second_chip = 0;
 	return 0;
 
 out_free_dma:

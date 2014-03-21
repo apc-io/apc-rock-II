@@ -134,4 +134,9 @@ obj-$(CONFIG_RPMSG)		+= rpmsg/
 obj-$(CONFIG_VIRT_DRIVERS)	+= virt/
 obj-$(CONFIG_HYPERV)		+= hv/
 
+obj-$(CONFIG_MTK_COMBO) += mtk_wcn_combo/
 obj-$(CONFIG_PM_DEVFREQ)	+= devfreq/
+obj-$(CONFIG_MTK_MT5931)	+= mt5931/
+obj-$(CONFIG_MTK_MT5931_WIFI)	+= wlan_drv_5931_power/
+
+obj-$(CONFIG_MTK_DISCRETE_BT_HW_CTL)   += mtk_wcn_bt/

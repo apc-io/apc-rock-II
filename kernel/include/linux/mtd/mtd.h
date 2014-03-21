@@ -255,6 +255,7 @@ struct mtd_info {
 	int id2;
 	unsigned int spec_clk;
 	int spec_tadl;
+	uint32_t pageSizek;
 };
 
 int mtd_erase(struct mtd_info *mtd, struct erase_info *instr);

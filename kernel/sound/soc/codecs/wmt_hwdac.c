@@ -92,13 +92,15 @@ struct snd_soc_dai_driver hwdac_dai = {
 		.channels_min = 1,
 		.channels_max = 2,
 		.rates = HWDAC_RATES,
-		.formats = HWDAC_FORMATS,},
+		.formats = HWDAC_FORMATS,
+	},
 	.capture  = {
 		.stream_name  = "Capture",
-		.channels_min = 2,
+		.channels_min = 1,
 		.channels_max = 2,
 		.rates        = HWDAC_RATES,
-		.formats      = HWDAC_FORMATS,},	
+		.formats      = HWDAC_FORMATS,
+	},
 	.ops = &hwdac_dai_ops,
 };
 
@@ -165,7 +167,7 @@ static int __init wmt_hwdac_platform_init(void)
 
 	DBG_DETAIL();
 
-	ret = wmt_getsyspara("wmt.audio.i2s", buf, &varlen);
+	/*ret = wmt_getsyspara("wmt.audio.i2s", buf, &varlen);
 	
 	if (ret == 0) {
 		sscanf(buf, "%5s", codec_name);
@@ -174,7 +176,7 @@ static int __init wmt_hwdac_platform_init(void)
 			info("hwdac string not found");
 			return -EINVAL;
 		}
-	}
+	}*/
 
 	return platform_driver_register(&wmt_hwdac_driver);
 }

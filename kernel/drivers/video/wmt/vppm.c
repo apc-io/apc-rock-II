@@ -252,6 +252,7 @@ void vppm_init(void *base)
 
 	vppm_set_module_reset(0);
 	vppm_set_int_enable(VPP_FLAG_ENABLE, mod_p->int_catch);
+	vppm_clean_int_status(~0);
 }
 
 int vppm_mod_init(void)

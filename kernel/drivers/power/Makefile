@@ -3,12 +3,8 @@ ccflags-$(CONFIG_POWER_SUPPLY_DEBUG) := -DDEBUG
 power_supply-y				:= power_supply_core.o
 power_supply-$(CONFIG_SYSFS)		+= power_supply_sysfs.o
 power_supply-$(CONFIG_LEDS_TRIGGERS)	+= power_supply_leds.o
-obj-$(CONFIG_POWER_SUPPLY)	+= power_supply.o
 
-obj-$(CONFIG_WMT_VT1603_BATTERY) += wmt_battery/gauge/vt1603/
-obj-$(CONFIG_G2214_CHARGER) += wmt_battery/charger/g2214/
-obj-$(CONFIG_BATTERY_WMT)	+= wmt_battery/gauge/
-obj-$(CONFIG_MPS_CHARGER) += wmt_battery/charger/mps/
+obj-$(CONFIG_POWER_SUPPLY)	+= power_supply.o
 obj-$(CONFIG_PDA_POWER)		+= pda_power.o
 obj-$(CONFIG_APM_POWER)		+= apm_power.o
 obj-$(CONFIG_MAX8925_POWER)	+= max8925_power.o
@@ -16,6 +12,13 @@ obj-$(CONFIG_WM831X_BACKUP)	+= wm831x_backup.o
 obj-$(CONFIG_WM831X_POWER)	+= wm831x_power.o
 obj-$(CONFIG_WM8350_POWER)	+= wm8350_power.o
 obj-$(CONFIG_TEST_POWER)	+= test_power.o
+
+obj-$(CONFIG_BATTERY_WMT)	+= wmt_charger.o
+obj-$(CONFIG_BATTERY_WMT)	+= wmt_battery_common.o
+obj-$(CONFIG_BATTERY_WMT)	+= vt1603/
+obj-$(CONFIG_BATTERY_WMT)	+= ug31xx/
+obj-$(CONFIG_BATTERY_WMT)	+= bq27xx/
+obj-$(CONFIG_BATTERY_WMT)	+= g2214/
 
 obj-$(CONFIG_BATTERY_DS2760)	+= ds2760_battery.o
 obj-$(CONFIG_BATTERY_DS2780)	+= ds2780_battery.o

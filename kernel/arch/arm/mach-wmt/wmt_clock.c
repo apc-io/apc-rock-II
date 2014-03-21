@@ -66,7 +66,7 @@ wmt_twd_clk_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
 	int freq = 0;
 
 	/* return the ARM CPU clock rate */
-	freq = auto_pll_divisor(DEV_ARM, GET_FREQ, 0, 0) / 2;
+	freq = auto_pll_divisor(DEV_ARM, GET_CPUTIMER, 0, 0) / 2;
 
 	if (freq < 0)
 		freq = 0;
@@ -84,9 +84,7 @@ static struct clk_ops wmt_twd_clk_ops = {
 static int wmt3498_register_twd_clk(struct clk_ops *ops, struct clk_lookup *cl)
 {
 	struct clk_hw *hw = NULL;
-	int freq = 0;
 
-	freq = auto_pll_divisor(DEV_ARM, GET_FREQ, 0, 0) / 1000;
 	clkdev_add(cl);
 
 	/* register twd clk here */
@@ -148,7 +146,7 @@ static int wmt_twd_cpufreq_transition(struct notifier_block *nb,
 	if (state == CPUFREQ_POSTCHANGE || state == CPUFREQ_RESUMECHANGE) {
 		// only boot-cpu do clk rate update
 		if (freqs->cpu == 0) {
-			wmt_twd_clk->rate = auto_pll_divisor(DEV_ARM, GET_FREQ, 0, 0) / 2;
+			wmt_twd_clk->rate = auto_pll_divisor(DEV_ARM, GET_CPUTIMER, 0, 0) / 2;
 			wmt_twd_clk->new_rate = wmt_twd_clk->rate;
 		}
 	}
@@ -164,9 +162,7 @@ static struct notifier_block wmt_twd_cpufreq_nb = {
 
 static int wmt_twd_cpufreq_init(void)
 {
-	return cpufreq_register_notifier(&wmt_twd_cpufreq_nb, 
-										CPUFREQ_TRANSITION_NOTIFIER);
-
+	return cpufreq_register_notifier(&wmt_twd_cpufreq_nb, CPUFREQ_TRANSITION_NOTIFIER);
 }
 core_initcall(wmt_twd_cpufreq_init);
 

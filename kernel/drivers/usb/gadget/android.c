@@ -54,6 +54,7 @@
 #include "f_rndis.c"
 #include "rndis.c"
 #include "u_ether.c"
+#include "f_rawbulk.c"
 
 MODULE_AUTHOR("Mike Lockwood");
 MODULE_DESCRIPTION("Android Composite USB Driver");
@@ -215,6 +216,7 @@ static void android_disable(struct android_dev *dev)
 		/* Cancel pending control requests */
 		usb_ep_dequeue(cdev->gadget->ep0, cdev->req);
 		usb_remove_config(cdev, &android_config_driver);
+        usb_ep_autoconfig_reset(cdev->gadget);
 	}
 }
 
@@ -917,6 +919,86 @@ static struct android_usb_function accessory_function = {
 	.bind_config	= accessory_function_bind_config,
 	.ctrlrequest	= accessory_function_ctrlrequest,
 };
+#define CONFIG_USB_ANDROID_RAWBULK 1
+
+/* VIA Rawbulk functions */
+#ifdef CONFIG_USB_ANDROID_RAWBULK
+static int rawbulk_function_init(struct android_usb_function *f,
+					struct usb_composite_dev *cdev)
+{
+	return 0;
+}
+
+static void rawbulk_function_cleanup(struct android_usb_function *f)
+{
+	;
+}
+
+static int rawbulk_function_bind_config(struct android_usb_function *f,
+						struct usb_configuration *c)
+{
+    char *i = f->name + strlen("via_");
+    if (!strncmp(i, "modem", 5))
+        return rawbulk_bind_config(c, RAWBULK_TID_MODEM);
+    else if (!strncmp(i, "ets", 3))
+        return rawbulk_bind_config(c, RAWBULK_TID_ETS);
+    else if (!strncmp(i, "atc", 3))
+        return rawbulk_bind_config(c, RAWBULK_TID_AT);
+    else if (!strncmp(i, "pcv", 3))
+        return rawbulk_bind_config(c, RAWBULK_TID_PCV);
+    else if (!strncmp(i, "gps", 3))
+        return rawbulk_bind_config(c, RAWBULK_TID_GPS);
+    return -EINVAL;
+}
+
+static int rawbulk_function_modem_ctrlrequest(struct android_usb_function *f,
+						struct usb_composite_dev *cdev,
+						const struct usb_ctrlrequest *c)
+{
+    if ((c->bRequestType & USB_RECIP_MASK) == USB_RECIP_DEVICE &&
+            (c->bRequestType & USB_TYPE_MASK) == USB_TYPE_VENDOR) {
+        struct rawbulk_function *fn = rawbulk_lookup_function(RAWBULK_TID_MODEM);
+        return rawbulk_function_setup(&fn->function, c);
+    }
+    return -1;
+}
+
+static struct android_usb_function rawbulk_modem_function = {
+	.name		= "via_modem",
+	.init		= rawbulk_function_init,
+	.cleanup	= rawbulk_function_cleanup,
+	.bind_config	= rawbulk_function_bind_config,
+	.ctrlrequest	= rawbulk_function_modem_ctrlrequest,
+};
+
+static struct android_usb_function rawbulk_ets_function = {
+	.name		= "via_ets",
+	.init		= rawbulk_function_init,
+	.cleanup	= rawbulk_function_cleanup,
+	.bind_config	= rawbulk_function_bind_config,
+};
+
+static struct android_usb_function rawbulk_atc_function = {
+	.name		= "via_atc",
+	.init		= rawbulk_function_init,
+	.cleanup	= rawbulk_function_cleanup,
+	.bind_config	= rawbulk_function_bind_config,
+};
+
+static struct android_usb_function rawbulk_pcv_function = {
+	.name		= "via_pcv",
+	.init		= rawbulk_function_init,
+	.cleanup	= rawbulk_function_cleanup,
+	.bind_config	= rawbulk_function_bind_config,
+};
+
+static struct android_usb_function rawbulk_gps_function = {
+	.name		= "via_gps",
+	.init		= rawbulk_function_init,
+	.cleanup	= rawbulk_function_cleanup,
+	.bind_config	= rawbulk_function_bind_config,
+};
+#endif /* CONFIG_USB_ANDROID_RAWBULK */
 
 static int audio_source_function_init(struct android_usb_function *f,
 			struct usb_composite_dev *cdev)
@@ -990,6 +1072,11 @@ static struct android_usb_function *supported_functions[] = {
 	&mass_storage_function,
 	&accessory_function,
 	&audio_source_function,
+    &rawbulk_modem_function,
+    &rawbulk_ets_function,
+    &rawbulk_atc_function,
+    &rawbulk_pcv_function,
+    &rawbulk_gps_function,
 	NULL
 };
 
@@ -1467,6 +1554,14 @@ android_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *c)
 	if (!dev->connected) {
 		dev->connected = 1;
 		schedule_work(&dev->work);
+
+		/* FIXME: try to check and change charging current.
+		 * it's ugly, we may find somewhere to do it. */
+		extern void wmt_charger_current_config(void);
+		wmt_charger_current_config();
+		extern void wmt_pc_connected(void);
+		wmt_pc_connected();
+
 	} else if (c->bRequest == USB_REQ_SET_CONFIGURATION &&
 						cdev->config) {
 		schedule_work(&dev->work);
@@ -1518,6 +1613,12 @@ static int android_create_device(struct android_dev *dev)
 	return 0;
 }
 
+/* provide usb connected state for charger */
+int wmt_usb_connected(void)
+{
+	return _android_dev ? _android_dev->connected : 0;
+}
+EXPORT_SYMBOL(wmt_usb_connected);
 
 static int __init init(void)
 {

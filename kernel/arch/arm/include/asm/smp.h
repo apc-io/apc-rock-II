@@ -95,4 +95,10 @@ extern void arch_send_call_function_ipi_mask(const struct cpumask *mask);
 
 extern void smp_send_all_cpu_backtrace(void);
 
+#ifdef CONFIG_OTZONE_ASYNC_NOTIFY_SUPPORT
+typedef void (ipi_secure_notify_handler)(struct pt_regs *regs);
+int register_secure_notify_handler(ipi_secure_notify_handler handler);
+int unregister_secure_notify_handler(void);
+#endif
+
 #endif /* ifndef __ASM_ARM_SMP_H */

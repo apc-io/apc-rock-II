@@ -29,3 +29,4 @@ obj-$(CONFIG_SYNCLINK)		+= synclink.o
 obj-$(CONFIG_PPC_EPAPR_HV_BYTECHAN) += ehv_bytechan.o
 
 obj-y += ipwireless/
+obj-y += wmt_3g.o

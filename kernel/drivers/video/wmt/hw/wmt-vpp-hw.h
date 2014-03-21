@@ -88,7 +88,7 @@
 #define VPP_DVI_I2C_BIT		0x80 /* use sw id that can vary */
 #define VPP_DVI_I2C_SW_BIT 	0x10 /* hw or sw i2c */
 #define VPP_DVI_I2C_ID_MASK 	0x1F
-#define VPP_DVI_I2C_ID 		(VPP_DVI_I2C_BIT + 0x2)
+#define VPP_DVI_I2C_ID 		(VPP_DVI_I2C_BIT + 0x1)
 #define VPP_DVI_EDID_ID 	(VPP_DVI_I2C_SW_BIT + 0x1) /* DVO EDID use sw i2c bus 1 */
 
 /* vout */
@@ -108,7 +108,7 @@
 #define VPP_VOINT_NO 		0  /* DVO external board interrupt use GPIOxx */
 #define VPP_UBOOT_COLFMT 	VDO_COL_FMT_RGB_565
 #define VPP_FB_ADDR_ALIGN 	64
-#define VPP_FB_WIDTH_ALIGN 	64   /* hw should 4 byte align,android 
+#define VPP_FB_WIDTH_ALIGN 	64   /* hw should 4 byte align,android
 	framework 8 byte align modify by aksenxu VPU need 64bytes alignment
 	you need modify FramebufferNativeWindow::FramebufferNativeWindow
 	in android framework together */

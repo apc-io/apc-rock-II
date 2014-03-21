@@ -66,7 +66,8 @@ js-rtc-y = rtc.o
 
 obj-$(CONFIG_TILE_SROM)		+= tile-srom.o
 
-obj-$(CONFIG_WMT_GPIO)	+= wmt-gpio.o
-obj-$(CONFIG_PWM_WMT)	+= wmt-pwm.o
+obj-$(CONFIG_WMT_GPIO)		+= wmt_gpio.o
+obj-$(CONFIG_PWM_WMT)		+= wmt-pwm.o
 obj-$(CONFIG_WMT_VIBRATOR)	+= wmt_vibrate/
-obj-$(CONFIG_CHARGE_SMB358) += wmt-smb358.o
+obj-$(CONFIG_CHARGE_SMB358)	+= wmt-smb358.o
+

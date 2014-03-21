@@ -44,6 +44,9 @@ WonderMedia Technologies, Inc.
 #define MIN_OSCR_DELTA  16
 #define MIN_HRTMR_CYC_DELTA  64
 #define WMT_CLOCK_TICK_RATE 3000000
+#define WMT_CLOCK_TICK_RATE1 5000000
+#define WMT_CLOCK_TICK_RATE2 6000000
+#define WMT_CLOCK_TICK_RATE3 6000000
 
 /* Clear OS Timer1 irq */
 static inline void wmt_os_timer_clear_irq(void)
@@ -131,6 +134,53 @@ static void __init wmt_clocksource_init(struct clocksource *cs)
 	fq_dbg("%s mult:%u, shift:%u, max_idle_ns:%llu\n\n", cs->name,
 		cs->mult, cs->shift, cs->max_idle_ns);
 }
+
+struct clocksource wmt_clocksource1 = {
+	.name           = "wmt_clocksource1",
+	.rating         = 150,
+	.read           = wmt_timer_read_cycles,
+	.mask           = CLOCKSOURCE_MASK(32),
+	.flags          = CLOCK_SOURCE_IS_CONTINUOUS,
+};
+
+static void __init wmt_clocksource_init1(struct clocksource *cs)
+{
+	clocksource_register_hz(cs, WMT_CLOCK_TICK_RATE1);
+    fq_dbg("%s mult:%u, shift:%u, max_idle_ns:%llu\n\n", cs->name,
+                                cs->mult, cs->shift, cs->max_idle_ns);
+}
+
+
+struct clocksource wmt_clocksource2 = {
+	.name           = "wmt_clocksource2",
+	.rating         = 150,
+	.read           = wmt_timer_read_cycles,
+	.mask           = CLOCKSOURCE_MASK(32),
+	.flags          = CLOCK_SOURCE_IS_CONTINUOUS,
+};
+
+static void __init wmt_clocksource_init2(struct clocksource *cs)
+{
+	clocksource_register_hz(cs, WMT_CLOCK_TICK_RATE2);
+    fq_dbg("%s mult:%u, shift:%u, max_idle_ns:%llu\n\n", cs->name,
+                                cs->mult, cs->shift, cs->max_idle_ns);
+}
+
+struct clocksource wmt_clocksource3 = {
+	.name           = "wmt_clocksource3",
+	.rating         = 150,
+	.read           = wmt_timer_read_cycles,
+	.mask           = CLOCKSOURCE_MASK(32),
+	.flags          = CLOCK_SOURCE_IS_CONTINUOUS,
+};
+
+static void __init wmt_clocksource_init3(struct clocksource *cs)
+{
+	clocksource_register_hz(cs, WMT_CLOCK_TICK_RATE3);
+    fq_dbg("%s mult:%u, shift:%u, max_idle_ns:%llu\n\n", cs->name,
+                                cs->mult, cs->shift, cs->max_idle_ns);
+}
+
 
 static int
 wmt_timer_set_next_event(unsigned long cycles, struct clock_event_device *evt)
@@ -271,6 +321,9 @@ static void __init wmt_timer_init(void)
 	wmt_os_timer_init();
 	/* os timer1 as clocksourece                */
 	wmt_clocksource_init(&wmt_clocksource);
+    	wmt_clocksource_init1(&wmt_clocksource1);	
+    	wmt_clocksource_init2(&wmt_clocksource2);	
+    	wmt_clocksource_init3(&wmt_clocksource3);	
 	/* sched_clock for timestamp, as printk.... */
 	setup_sched_clock(wmt_read_sched_clock, 32, WMT_CLOCK_TICK_RATE);
 	/* os timer1 as clockevent device           */
@@ -315,6 +368,8 @@ __setup("nortc", no_rtc);
 
 static void wmt_rtc_init(void)
 {
+	fq_dbg("Enter\n");
+
 	RTCC_VAL = (RTCC_ENA|RTCC_INTTYPE);
 	if (!(RTSR_VAL&RTSR_VAILD))
 		while (!(RTSR_VAL&RTSR_VAILD))
@@ -346,6 +401,7 @@ static void wmt_rtc_init(void)
 			;
 	}
 
+	fq_dbg("Exit\n\n\n");
 	return ;
 }
 

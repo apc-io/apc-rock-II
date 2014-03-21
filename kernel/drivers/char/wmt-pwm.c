@@ -86,7 +86,7 @@ static struct pwm_dev_s pwm_dev;
 
 unsigned int pwm_level[2] = { 0, 0 };
 unsigned int pwm_freq[2] = {16000, 16000 }; //modified by howayhuo. org: {1000, 1000 }
-unsigned int pwm_enable[2] = {0,0};
+static unsigned int pwm_enable[2] = {0,0};
 
 DEFINE_SEMAPHORE(pwm_lock);
 
@@ -194,7 +194,7 @@ unsigned int get_lcd_power(void)
 	return g_pwm_power;
 /*
 	unsigned int val, reg;
-	
+
 	if ((g_lcd_pw_pin.ctl == 0) || (g_lcd_pw_pin.oc == 0) || (g_lcd_pw_pin.od == 0)) {
 		printk("lcd power ping not define\n");
 		return 0;
@@ -214,7 +214,7 @@ unsigned int get_lcd_power(void)
 			return 1;
 	} else {
 		if (!reg)
-			return 1; 
+			return 1;
 	}
 	return 0;
 */
@@ -247,7 +247,7 @@ void pwm_set_gpio(int no,int enable)
 {
 	unsigned int pwm_pin;
 
-	if( enable ) { 
+	if( enable ) {
 		REG8_VAL(GPIO_OD_GP20_PWM0_BYTE_ADDR) &= 0xFE;
 		REG8_VAL(GPIO_CTRL_GP20_PWM0_BYTE_ADDR) &= 0xFE;
 	} else {
@@ -261,7 +261,7 @@ void pwm_set_gpio(int no,int enable)
 	else if( no == 1 )
 		REG32_VAL(PIN_SHARING_SEL_4BYTE_ADDR) &= ~0x80;
 	g_pwm_power = (unsigned int)enable;
-	lcd_set_enable(enable);
+	//lcd_set_enable(enable);
 	/*set_lcd_power(enable);*/
 
 }
@@ -347,7 +347,7 @@ static int pwm_do_freq0_proc(ctl_table * ctl,int write,void *buffer,size_t * len
 	if (write)
 		pwm_set_freq(0, pwm_freq[0]);
 
-	return ret;	
+	return ret;
 }
 
 static int pwm_do_freq1_proc(ctl_table * ctl,int write,void *buffer,size_t * len,loff_t *ppos)
@@ -358,7 +358,7 @@ static int pwm_do_freq1_proc(ctl_table * ctl,int write,void *buffer,size_t * len
 	if (write)
 		pwm_set_freq(1, pwm_freq[1]);
 
-	return ret;	
+	return ret;
 }
 
 static int pwm_do_level0_proc(ctl_table * ctl,int write,void *buffer,size_t * len,loff_t *ppos)
@@ -369,7 +369,7 @@ static int pwm_do_level0_proc(ctl_table * ctl,int write,void *buffer,size_t * le
 	if (write)
 		pwm_set_level(0, pwm_level[0]);
 
-	return ret;	
+	return ret;
 }
 
 static int pwm_do_level1_proc(ctl_table * ctl,int write,void *buffer,size_t * len,loff_t *ppos)
@@ -380,7 +380,7 @@ static int pwm_do_level1_proc(ctl_table * ctl,int write,void *buffer,size_t * le
 	if (write)
 		pwm_set_level(1, pwm_level[1]);
 
-	return ret;	
+	return ret;
 }
 
 static ctl_table pwm_table[] = {

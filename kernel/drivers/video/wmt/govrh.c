@@ -56,8 +56,11 @@ void govrh_reg_dump(vpp_mod_base_t *base)
 	DPRINT("---------- GOVRH TG1 ----------\n");
 	DPRINT("TG enable %d, Twin mode %d\n",
 		regs->tg_enable.b.enable, regs->tg_enable.b.mode);
-	DPRINT("DVO clk %d,Read cyc %d\n",
-		vpp_get_base_clock(p_govr->mod), regs->read_cyc);
+	DPRINT("DVO clk %d,%d,Read cyc %d\n",
+		vpp_get_base_clock(p_govr->mod),
+		auto_pll_divisor((p_govr->mod == VPP_MOD_GOVRH) ?
+			DEV_HDMILVDS : DEV_DVO, GET_FREQ, 0, 0),
+		regs->read_cyc);
 	DPRINT("H total %d, Sync %d, beg %d, end %d\n",
 		regs->h_allpxl, regs->hdmi_hsynw,
 		regs->actpx_bg, regs->actpx_end);
@@ -1494,6 +1497,8 @@ void govrh_get_framebuffer(govrh_mod_t *base, vdo_framebuf_t *fb)
 	fb->flag = (regs->srcfmt) ? VDO_FLAG_INTERLACE : 0;
 	vpp_get_colfmt_bpp(fb->col_fmt, &y_bpp, &c_bpp);
 	fb->bpp = y_bpp + c_bpp;
+	fb->y_size = fb->fb_w * fb->fb_h * y_bpp / 8;
+	fb->c_size = fb->fb_w * fb->fb_h * c_bpp / 8;
 }
 
 /*----------------------- GOVRH MODULE API -----------------------------*/

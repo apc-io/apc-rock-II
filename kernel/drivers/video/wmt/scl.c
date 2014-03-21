@@ -1550,6 +1550,7 @@ int scl_mod_init(void)
 		| VPP_FB_FLAG_CSC | VPP_FB_FLAG_FIELD;
 	p_scl = scl_mod_p;
 	p_scl->scale_complete = 1;
+	p_scl->scale_sync = 1;
 	}
 
 	/* -------------------- SCLW module -------------------- */

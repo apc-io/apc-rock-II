@@ -18,7 +18,7 @@ WonderMedia Technologies, Inc.
 --*/
 
 #include <linux/module.h>
-#include <linux/init.h>
+#include <linux/init.h> 
 #include <linux/interrupt.h>
 #include <linux/types.h>
 #include <linux/input.h>
@@ -33,9 +33,9 @@ WonderMedia Technologies, Inc.
 #include <asm/errno.h>
 #include <asm/mach-types.h>
 #include <mach/hardware.h>
-/*#include <mach/kpad.h> */
 #include <linux/suspend.h>
-
+#include <linux/gpio.h>
+#include <mach/wmt_iomux.h>
 
 
 /* Debug macros */
@@ -45,50 +45,41 @@ WonderMedia Technologies, Inc.
 #define DPRINTK(fmt, args...)
 #endif
 
-/* #define USE_HOME */
-#define wmt_kpad_timeout ((HZ/100)*10)
+//#define USE_HOME
+#define wmt_kpad_timeout (HZ/50)
 
-#define WMT_KPAD_FUNCTION_NUM 2
+#define WMT_KPAD_FUNCTION_NUM 6
 
 
-static unsigned int wmt_kpad_codes[WMT_KPAD_FUNCTION_NUM] = {
+static unsigned int wmt_kpad_codes[WMT_KPAD_FUNCTION_NUM] = {  
 	[0] = KEY_VOLUMEUP,
 	[1] = KEY_VOLUMEDOWN,
+	[2] = KEY_BACK,
+	[3] = KEY_HOME,
+	[4] = KEY_MENU,
+	[5] = KEY_CAMERA,
+};    
+
+
+enum {
+    KEY_ST_up,
+    KEY_ST_down,
+    KEY_ST_debounce,
 };
-#define WMT_GPIO8_KEY_NUM 0
-#define WMT_GPIO10_KEY_NUM 1
-
-
-static struct timer_list   wmt_kpad_timer_vu;
-static struct timer_list   wmt_kpad_timer_vd;
-
-
-
 
 static struct input_dev *kpad_dev;
 
+int key_num = 0;
 
-#define KEYPAD_GPIO_BIT_VU BIT0
-#define KEYPAD_GPIO_BIT_VD BIT2
-
-#define KEYPAD_GPIO_CTRL_VAL_VU          GPIO_CTRL_GP1_BYTE_VAL
-#define KEYPAD_GPIO_OC_VAL_VU            GPIO_OC_GP1_BYTE_VAL
-#define KEYPAD_GPIO_ID_VAL_VU            GPIO_ID_GP1_BYTE_VAL
-#define KEYPAD_GPIO_PULL_CTRL_VAL_VU     PULL_CTRL_GP1_BYTE_VAL
-#define KEYPAD_GPIO_PULL_EN_VAL_VU       PULL_EN_GP1_BYTE_VAL
-#define KEYPAD_GPIO_INT_REQ_STS_VAL_VU   GPIO1_INT_REQ_STS_VAL
-#define KEYPAD_GPIO_INT_REQ_TYPE_VAL_VU  GPIO8_INT_REQ_TYPE_VAL
-
-#define KEYPAD_GPIO_CTRL_VAL_VD          GPIO_CTRL_GP1_BYTE_VAL
-#define KEYPAD_GPIO_OC_VAL_VD            GPIO_OC_GP1_BYTE_VAL
-#define KEYPAD_GPIO_ID_VAL_VD            GPIO_ID_GP1_BYTE_VAL
-#define KEYPAD_GPIO_PULL_CTRL_VAL_VD     PULL_CTRL_GP1_BYTE_VAL
-#define KEYPAD_GPIO_PULL_EN_VAL_VD       PULL_EN_GP1_BYTE_VAL
-#define KEYPAD_GPIO_INT_REQ_STS_VAL_VD   GPIO1_INT_REQ_STS_VAL
-#define KEYPAD_GPIO_INT_REQ_TYPE_VAL_VD  GPIO10_INT_REQ_TYPE_VAL
-
-
-
+struct wmt_key{
+    int gpio;
+    int keycode;
+    
+    int status;
+    int debounce;
+    struct timer_list timer;
+} ;
+struct wmt_key gpio_key[5];
 
 #ifdef CONFIG_CPU_FREQ
 /*
@@ -118,188 +109,150 @@ static struct notifier_block kpad_clock_nblock = {
 };
 #endif
 
-static void wmt_kpad_hw_init(void)
+static int wmt_kpad_gpio_requst(void)
 {
+    int i,ret;
 	DPRINTK("Start\n");
-
-	/*Falling edge irq type*/
-	KEYPAD_GPIO_INT_REQ_TYPE_VAL_VU |= BIT1;
-	KEYPAD_GPIO_INT_REQ_TYPE_VAL_VU &= ~(BIT0 | BIT2);
-
-	KEYPAD_GPIO_INT_REQ_TYPE_VAL_VD |= BIT1;
-	KEYPAD_GPIO_INT_REQ_TYPE_VAL_VD &= ~(BIT0 | BIT2);
-
-	/*Enable GPIO*/
-	KEYPAD_GPIO_CTRL_VAL_VU |= KEYPAD_GPIO_BIT_VU;
-	KEYPAD_GPIO_CTRL_VAL_VD |= KEYPAD_GPIO_BIT_VD;
-
-	/*Set GPIO as GPI*/
-	KEYPAD_GPIO_OC_VAL_VU &= ~KEYPAD_GPIO_BIT_VU;
-	KEYPAD_GPIO_OC_VAL_VD &= ~KEYPAD_GPIO_BIT_VD;
-
-	/*Set pull up*/
-	KEYPAD_GPIO_PULL_CTRL_VAL_VU |= KEYPAD_GPIO_BIT_VU;
-	KEYPAD_GPIO_PULL_CTRL_VAL_VD |= KEYPAD_GPIO_BIT_VD;
-
-	/*Pull enable*/
-	KEYPAD_GPIO_PULL_EN_VAL_VU |= KEYPAD_GPIO_BIT_VU;
-	KEYPAD_GPIO_PULL_EN_VAL_VD |= KEYPAD_GPIO_BIT_VD;
-
-	/*Clear interrupt*/
-	KEYPAD_GPIO_INT_REQ_STS_VAL_VU = KEYPAD_GPIO_BIT_VU;
-	KEYPAD_GPIO_INT_REQ_STS_VAL_VD = KEYPAD_GPIO_BIT_VD;
-
-	/*Enable interrupt*/
-	KEYPAD_GPIO_INT_REQ_TYPE_VAL_VU |= BIT7;
-	KEYPAD_GPIO_INT_REQ_TYPE_VAL_VD |= BIT7;
-
+    for(i=0; i< key_num; i++){
+        ret = gpio_request(gpio_key[i].gpio,"kpad");
+        if(ret)
+            goto exit;
+    }
+    
 	DPRINTK("End\n");
+    return ret;
+exit:
+    for(i=0; i<key_num; i++)
+        gpio_free(gpio_key[i].gpio);
+    return ret;
 }
 
-
-
-static void wmt_kpad_timeout_vu(unsigned long fcontext)
+static int wmt_kpad_gpio_init(void)
 {
-	DPRINTK("Start\n");
-	if ((KEYPAD_GPIO_ID_VAL_VU & KEYPAD_GPIO_BIT_VU) == 0) {   /*Active Low*/
-		mod_timer(&wmt_kpad_timer_vu, jiffies + wmt_kpad_timeout);
-		DPRINTK("WMT Volume up keep press\n");
-	} else {
-		/*Volume up release*/
-		input_report_key(kpad_dev, KEY_VOLUMEUP, 0);
-		input_sync(kpad_dev);
-		DPRINTK("WMT_Volume up release key = %d \n", KEY_VOLUMEUP);
-		/*Enable irq*/
-		KEYPAD_GPIO_INT_REQ_TYPE_VAL_VU |= BIT7;
-	}
-	DPRINTK("End\n");
+    int i;
+    for(i=0; i<key_num; i++){
+        gpio_direction_input(gpio_key[i].gpio);
+        wmt_gpio_setpull(gpio_key[i].gpio,WMT_GPIO_PULL_UP);
+    }
+
+    return 0;
 }
 
-static void wmt_kpad_timeout_vd(unsigned long fcontext)
+
+static int wmt_kpad_gpio_free(void)
 {
-	DPRINTK("Start\n");
-	if ((KEYPAD_GPIO_ID_VAL_VD & KEYPAD_GPIO_BIT_VD) == 0) {   /*Active Low*/
-		mod_timer(&wmt_kpad_timer_vd, jiffies + wmt_kpad_timeout);
-		DPRINTK("WMT Volume down keep press\n");
-	} else {
-		/*Volume down release*/
-		input_report_key(kpad_dev, KEY_VOLUMEDOWN, 0); /*row4 key is release*/
-		input_sync(kpad_dev);
-		DPRINTK("WMT_Volume down release key = %d \n", KEY_VOLUMEDOWN);
-		/*Enable irq*/
-		KEYPAD_GPIO_INT_REQ_TYPE_VAL_VD |= BIT7;
-	}
-	DPRINTK("End\n");
+    int i;
+    for(i=0; i<key_num; i++){
+        gpio_free(gpio_key[i].gpio);
+    }
+
+    return 0;
 }
 
-
-
-static irqreturn_t
-kpad_interrupt(int irq, void *dev_id)
+static void wmt_kpad_poll(unsigned long fcontext)
 {
-	unsigned int vu_int_status, vd_int_status;
+    struct wmt_key *gpk = (struct wmt_key *)fcontext;
+    
+	//DPRINTK("Start\n");
+	if (__gpio_get_value(gpk->gpio) == 0) {   /*Active Low*/
+        if(gpk->status == KEY_ST_up){
+            gpk->debounce = 5;
+            gpk->status = KEY_ST_debounce;
+            DPRINTK("vd down to debounce\n");
+        }
 
-	DPRINTK("[%s]s\n", __func__);
+        if(gpk->status == KEY_ST_debounce){
+            if(--gpk->debounce == 0){
+                gpk->status = KEY_ST_down;
+                /* report volume down key down */
+                input_report_key(kpad_dev, gpk->keycode, 1);                
+                input_sync(kpad_dev);
+                DPRINTK("WMT Volume up keep press\n");
+            }
+        }    
+        //DPRINTK("vd level is low,status=%d\n",vu_status);
+		
+	} 
+    else {/* Level High */
+        if(gpk->status == KEY_ST_down){
+            gpk->status = KEY_ST_up;
+    		/*Volume down release*/
+    		input_report_key(kpad_dev, gpk->keycode, 0); /*row4 key is release*/
+    		input_sync(kpad_dev);
+            DPRINTK("WMT_Volume down release key = %d \n", gpk->keycode);
+        }
 
-	/*disable interrupt*/
-	KEYPAD_GPIO_INT_REQ_TYPE_VAL_VU &= ~BIT7;
-	KEYPAD_GPIO_INT_REQ_TYPE_VAL_VD &= ~BIT7;
-
-	if ((!(KEYPAD_GPIO_INT_REQ_STS_VAL_VU & KEYPAD_GPIO_BIT_VU)) &&
-		(!(KEYPAD_GPIO_INT_REQ_STS_VAL_VD & KEYPAD_GPIO_BIT_VD))) {
-
-		/*Enable interrupt*/
-		KEYPAD_GPIO_INT_REQ_TYPE_VAL_VU |= BIT7;
-		KEYPAD_GPIO_INT_REQ_TYPE_VAL_VD |= BIT7;
-
-		return IRQ_NONE;
+        if(gpk->status == KEY_ST_debounce){
+            if(--gpk->debounce == 0){
+                gpk->status = KEY_ST_up;
+            }
+        }
+        
+        //DPRINTK("vd level is high,status=%d\n",vu_status);
+		
 	}
+    
+    mod_timer(&gpk->timer, jiffies + wmt_kpad_timeout);
+	//DPRINTK("End\n");
 
-	vu_int_status = KEYPAD_GPIO_INT_REQ_STS_VAL_VU;
-	vd_int_status = KEYPAD_GPIO_INT_REQ_STS_VAL_VD;
-
-	/*Clear interrupt*/
-	if (KEYPAD_GPIO_INT_REQ_STS_VAL_VU & KEYPAD_GPIO_BIT_VU)
-		KEYPAD_GPIO_INT_REQ_STS_VAL_VU = KEYPAD_GPIO_BIT_VU;
-
-	if (KEYPAD_GPIO_INT_REQ_STS_VAL_VD & KEYPAD_GPIO_BIT_VD)
-		KEYPAD_GPIO_INT_REQ_STS_VAL_VD = KEYPAD_GPIO_BIT_VD;
-
-	if (KEYPAD_GPIO_INT_REQ_STS_VAL_VU & KEYPAD_GPIO_BIT_VU)
-		DPRINTK("[Volume up] Clear interrupt failed.\n");
-
-	if (KEYPAD_GPIO_INT_REQ_STS_VAL_VD & KEYPAD_GPIO_BIT_VD)
-		DPRINTK("[Volume down] Clear interrupt failed.\n");
-
-	if (!(vu_int_status & KEYPAD_GPIO_BIT_VU)) {
-		/*Enable interrupt*/
-		KEYPAD_GPIO_INT_REQ_TYPE_VAL_VU |= BIT7;
-	} else {
-		/*Volume up is pressed*/
-		input_report_key(kpad_dev, KEY_VOLUMEUP, 1);
-		input_sync(kpad_dev);
-		mod_timer(&wmt_kpad_timer_vu, jiffies + wmt_kpad_timeout);
-		DPRINTK("[%s]WMT Volume up press = %d\n", __func__, KEY_VOLUMEUP);
-	}
-
-	if (!(vd_int_status & KEYPAD_GPIO_BIT_VD)) {
-		/*Enable interrupt*/
-		KEYPAD_GPIO_INT_REQ_TYPE_VAL_VD |= BIT7;
-	} else {
-		/*Volume up is pressed*/
-		input_report_key(kpad_dev, KEY_VOLUMEDOWN, 1);
-		input_sync(kpad_dev);
-		mod_timer(&wmt_kpad_timer_vd, jiffies + wmt_kpad_timeout);
-		DPRINTK("[%s]WMT Volume down press = %d\n", __func__, KEY_VOLUMEDOWN);
-	}
-
-	DPRINTK("[%s]e\n", __func__);
-	return IRQ_HANDLED;
+    return;
 }
 
+static int init_key_timer(void)
+{
+    int i;
+    for(i=0; i<key_num;i++){
+        init_timer(&gpio_key[i].timer);
+	    gpio_key[i].timer.function = wmt_kpad_poll;
+	    gpio_key[i].timer.data = (unsigned long)&gpio_key[i];
+    }
 
+    return 0;
+}
+
+static int start_key_timer(void)
+{   int i;
+    for(i=0;i<key_num;i++){
+        gpio_key[i].status = KEY_ST_up;
+        mod_timer(&gpio_key[i].timer, jiffies + HZ/10);
+    }
+
+    return 0;
+}
+
+static int del_key_timer(void)
+{   int i;
+    for(i=0;i<key_num;i++){
+        gpio_key[i].status = KEY_ST_up;
+        del_timer_sync(&gpio_key[i].timer);
+    }
+
+    return 0;
+}
 static int kpad_open(struct input_dev *dev)
 {
 	int ret = 0;
 	DPRINTK("Start\n");
-
-
-	ret = request_irq(IRQ_GPIO, kpad_interrupt, IRQF_SHARED, "keypad", dev);
-	if (ret) {
-		printk(KERN_ERR "%s: Can't allocate irq %d ret = %d\n", __func__, IRQ_GPIO, ret);
-		free_irq(IRQ_GPIO, dev);
-		goto kpad_open_out;
-	}
-	DPRINTK("1\n");
+    
 	/*init timer*/
-	init_timer(&wmt_kpad_timer_vu);
-	wmt_kpad_timer_vu.function = wmt_kpad_timeout_vu;
-	wmt_kpad_timer_vu.data = (unsigned long)dev;
-
-	init_timer(&wmt_kpad_timer_vd);
-	wmt_kpad_timer_vd.function = wmt_kpad_timeout_vd;
-	wmt_kpad_timer_vd.data = (unsigned long)dev;
-
-	wmt_kpad_hw_init();
+    init_key_timer();	
+    start_key_timer();
+    wmt_kpad_gpio_init();
 	DPRINTK("End2\n");
-kpad_open_out:
-	DPRINTK("End3\n");
+
 	return ret;
 }
 
 static void kpad_close(struct input_dev *dev)
 {
 	DPRINTK("Start\n");
-
-	/*
-	 * Free interrupt resource
-	 */
-	free_irq(IRQ_GPIO, NULL);
-
+    
+    del_key_timer();
 	/*
 	 * Unregister input device driver
 	 */
 	input_unregister_device(dev);
+
 	DPRINTK("End2\n");
 }
 
@@ -316,15 +269,12 @@ static int wmt_kpad_probe(struct platform_device *pdev)
 	/*
 	 * Simply check resources parameters.
 	 */
-	DPRINTK("pdev->num_resources = 0x%x\n", pdev->num_resources);
+	DPRINTK("pdev->num_resources = 0x%x\n",pdev->num_resources);
 	if (pdev->num_resources < 0 || pdev->num_resources > 2) {
 		ret = -ENODEV;
 		goto kpad_probe_out;
 	}
-
-	kpad_dev->open = kpad_open,
-	kpad_dev->close = kpad_close,
-
+	
 	/* Register an input event device. */
 	kpad_dev->name = "keypad",
 	kpad_dev->phys = "keypad",
@@ -351,7 +301,7 @@ static int wmt_kpad_probe(struct platform_device *pdev)
 	kpad_dev->id.version = 0;
 
 	input_register_device(kpad_dev);
-
+	kpad_open(kpad_dev);
 	DPRINTK("End2\n");
 kpad_probe_out:
 
@@ -365,25 +315,34 @@ kpad_probe_out:
 
 static int wmt_kpad_remove(struct platform_device *pdev)
 {
+    int ret;
 	DPRINTK("Start\n");
 	kpad_close(kpad_dev);
+    wmt_kpad_gpio_free();
 	DPRINTK("End\n");
+#ifdef CONFIG_CPU_FREQ
+	ret = cpufreq_unregister_notifier(&kpad_clock_nblock, \
+		CPUFREQ_TRANSITION_NOTIFIER);
+
+	if (ret) {
+		printk(KERN_ERR "Unable to unregister CPU frequency " \
+			"change notifier (%d)\n", ret);
+	}
+#endif
 	return 0;
 }
 
 static int wmt_kpad_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	DPRINTK("Start\n");
-
+    
 	switch (state.event) {
-	case PM_EVENT_SUSPEND:
-		/*disable interrupt*/
-		KEYPAD_GPIO_INT_REQ_TYPE_VAL_VU &= ~BIT7;
-		KEYPAD_GPIO_INT_REQ_TYPE_VAL_VD &= ~BIT7;
+	case PM_EVENT_SUSPEND:             
+        del_key_timer();
 		break;
 	case PM_EVENT_FREEZE:
 	case PM_EVENT_PRETHAW:
-
+        
 	default:
 		break;
 	}
@@ -393,11 +352,17 @@ static int wmt_kpad_suspend(struct platform_device *pdev, pm_message_t state)
 }
 
 static int wmt_kpad_resume(struct platform_device *pdev)
-{
+{  
 	DPRINTK("Start\n");
-	wmt_kpad_hw_init();
+	wmt_kpad_gpio_init();
+    start_key_timer();
 	DPRINTK("End\n");
 	return 0;
+}
+
+static void wmt_kpad_release(struct device *dev)
+{
+    return ;
 }
 
 static struct platform_driver wmt_kpad_driver = {
@@ -421,38 +386,49 @@ static struct platform_device wmt_kpad_device = {
 	.id				= 0,
 	.num_resources  = ARRAY_SIZE(wmt_kpad_resources),
 	.resource		= wmt_kpad_resources,
+	.dev            = {
+        .release    = wmt_kpad_release,
+    }
 };
 
 extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
 
 static int __init kpad_init(void)
 {
-	int ret;
+	int i,ret;
 	int retval;
 	unsigned char buf[80];
 	int varlen = 80;
-	char *varname = "wmt.keypad.param";
-	int temp = 0, enable_keypad = 0, function_sel = 1;
-
+	char *varname = "wmt.io.kpad";
+	char *p=NULL;
+    int gpio,code;
+	
 	DPRINTK(KERN_ALERT "Start\n");
-	/*read back&menu button integration enable >1 enable & the value is the timeout value*/
-	/*read keypad enable*/
 	retval = wmt_getsyspara(varname, buf, &varlen);
 	if (retval == 0) {
-		sscanf(buf, "%X", &temp);
-		enable_keypad = temp & 0xf;
-		function_sel = (temp >> 4) & 0xf;
-		printk(KERN_ALERT "wmt.keypad.param = %x, enable=%x, function = %x\n",
-			temp, enable_keypad, function_sel);
-		if (enable_keypad != 1 || function_sel != 0) {
-			printk(KERN_ALERT "Disable GPIO as keypad function!!\n");
+		sscanf(buf,"%d:", &key_num);
+		if (key_num <= 0)
 			return -ENODEV;
-		}
-	} else {
-		printk(KERN_ALERT "##Warning: \"wmt.keypad.param\" not find\n");
-		printk(KERN_ALERT "Default wmt.keypad.param = %x\n", temp);
-	}
+        p = buf;
+        for(i=0; i<key_num && p!=NULL; i++){
+            p = strchr(p,':');
+            p++;
+            sscanf(p,"[%d,%d]",&gpio,&code);
+            gpio_key[i].gpio = gpio;
+            gpio_key[i].keycode = code;
+            printk("gpio=%d,code=%d\n",gpio,gpio_key[i].keycode);
+        }
 
+	} else {
+		printk("##Warning: \"wmt.io.kpad\" not find\n");
+        return -EIO;
+	}
+    ret = wmt_kpad_gpio_requst();
+    if(ret){
+        printk("##Warning:Request gpio failed.\n");
+        return ret;
+    }
+	
 #ifdef CONFIG_CPU_FREQ
 	ret = cpufreq_register_notifier(&kpad_clock_nblock, \
 		CPUFREQ_TRANSITION_NOTIFIER);
@@ -464,12 +440,12 @@ static int __init kpad_init(void)
 #endif
 	ret = platform_device_register(&wmt_kpad_device);
 	if (ret != 0) {
-		DPRINTK("End1 ret = %x\n", ret);
+		DPRINTK("End1 ret = %x\n",ret);
 		return -ENODEV;
 	}
 
 	ret = platform_driver_register(&wmt_kpad_driver);
-	DPRINTK("End2 ret = %x\n", ret);
+	DPRINTK("End2 ret = %x\n",ret);
 	return ret;
 }
 

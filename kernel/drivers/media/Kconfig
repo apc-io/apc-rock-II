@@ -126,6 +126,26 @@ source "drivers/media/radio/Kconfig"
 
 source "drivers/media/dvb/Kconfig"
 
+config WMT_VIDEO_DECODE
+	tristate "WonderMedia Video Decoder"
+	---help---
+	  Say Y here to use WonderMedia hardware decoder to decode video
+
+menu "WonderMedia HW Video Decoder"
+	depends on WMT_VIDEO_DECODE
+source "drivers/media/video/wmt/Kconfig"
+endmenu
+
+config WMT_VIDEO_ENCODE
+	tristate "WonderMedia Video Encoder"
+	---help---
+	  Say Y here to use WonderMedia hardware encoder to encode video
+
+menu "WonderMedia HW Video Encoder"
+	depends on WMT_VIDEO_ENCODE
+source "drivers/media/video/wmt/encode/Kconfig"
+endmenu
+
 config WMT_V4L2
 	tristate "WonderMedia V4L2"
 	---help---
@@ -133,7 +153,7 @@ config WMT_V4L2
 
 menu "WonderMedia V4L2"
 	depends on WMT_V4L2
-source "drivers/media/video/wmt_v4l2/cmos/Kconfig"
+#source "drivers/media/video/wmt_v4l2/cmos/Kconfig"
 #source "drivers/media/video/wmt_v4l2/tv_decoder/Kconfig"
 
 endmenu

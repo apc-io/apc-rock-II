@@ -20,14 +20,9 @@
  * WonderMedia Technologies, Inc.
  * 4F, 533, Chung-Cheng Road, Hsin-Tien, Taipei 231, R.O.C
 --*/
+
 #ifndef WMT_VID_H
-/* To assert that only one occurrence is included */
 #define WMT_VID_H
-
-
-/*-------------------- MODULE DEPENDENCY -------------------------------------*/
-
-/*-------------------- EXPORTED PRIVATE CONSTANTS ----------------------------*/
 
 #include <mach/hardware.h>
 #include "wmt-vidreg.h"
@@ -76,9 +71,6 @@
 #define BIT30	0x40000000
 #define BIT31	0x80000000
 
-/*-------------------- EXPORTED PRIVATE TYPES---------------------------------*/
-/* typedef  void  viaapi_xxx_t;  *//*Example*/
-
 typedef enum{
 	VID_MODE_CMOS,   /* CMOS sensor mode */
 	VID_MODE_TVDEC   /* TV Decoder mode */
@@ -97,12 +89,12 @@ typedef enum{
 
 /* Following structure is used for all HW decoder as input arguments */
 typedef struct {
-    VID_FB_M;
+	VID_FB_M;
 } vid_fb_t;
 
 typedef struct {
-       struct i2c_adapter *adapter;
-       struct i2c_client *client;
+	struct i2c_adapter *adapter;
+	struct i2c_client *client;
 	char name[12];
 	unsigned int  gpio_pwr_active_level;
 	unsigned int  gpio_pwr_bitnum;
@@ -110,82 +102,45 @@ typedef struct {
 	unsigned int  gpio_pwr_reg_gpio_od;
 	unsigned int  gpio_pwr_reg_gpio_oc;
 	short  i2c_addr;
-}cmos_dev_t;
-
-
+} cmos_dev_t;
 
 typedef struct {
 	unsigned int en;
 	unsigned int dummy;
 	
-	unsigned int  dev_tot_num;
-	unsigned int  dev_id;
-	unsigned int  is_two_same_dev;
-	cmos_dev_t  dev[2];
+	unsigned int dev_tot_num;
+	unsigned int dev_id;
+	unsigned int is_two_same_dev;
+	cmos_dev_t   dev[2];
 	
-	
-	unsigned int v_flip[2];//v_mirror
-	unsigned int h_flip[2];//h_mirror
+	unsigned int v_flip;//v_mirror
+	unsigned int h_flip;//h_mirror
 	unsigned int i2c_gpio_en;
 
-	unsigned int   i2c_gpio_scl_binum;
-	unsigned int   i2c_gpio_sda_binum;
+	unsigned int i2c_gpio_scl_binum;
+	unsigned int i2c_gpio_sda_binum;
 	
-	unsigned int  reg_i2c_gpio_scl_gpio_in;
-	unsigned int  reg_i2c_gpio_scl_gpio_en;
-	unsigned int  reg_i2c_gpio_scl_gpio_od;
-	unsigned int  reg_i2c_gpio_scl_gpio_oc;
-	unsigned int  reg_i2c_gpio_scl_gpio_pe;
-	unsigned int  reg_i2c_gpio_scl_gpio_pe_bitnum;
+	unsigned int reg_i2c_gpio_scl_gpio_in;
+	unsigned int reg_i2c_gpio_scl_gpio_en;
+	unsigned int reg_i2c_gpio_scl_gpio_od;
+	unsigned int reg_i2c_gpio_scl_gpio_oc;
+	unsigned int reg_i2c_gpio_scl_gpio_pe;
+	unsigned int reg_i2c_gpio_scl_gpio_pe_bitnum;
 	
-	unsigned int  reg_i2c_gpio_sda_gpio_in;
-	unsigned int  reg_i2c_gpio_sda_gpio_en;
-	unsigned int  reg_i2c_gpio_sda_gpio_od;
-	unsigned int  reg_i2c_gpio_sda_gpio_oc;
-	unsigned int  reg_i2c_gpio_sda_gpio_pe;
-	unsigned int  reg_i2c_gpio_sda_gpio_pe_bitnum;
+	unsigned int reg_i2c_gpio_sda_gpio_in;
+	unsigned int reg_i2c_gpio_sda_gpio_en;
+	unsigned int reg_i2c_gpio_sda_gpio_od;
+	unsigned int reg_i2c_gpio_sda_gpio_oc;
+	unsigned int reg_i2c_gpio_sda_gpio_pe;
+	unsigned int reg_i2c_gpio_sda_gpio_pe_bitnum;
 	
 	char isMIPI;
-	
-}cmos_uboot_env_t;
+} cmos_uboot_env_t;
 
 typedef enum {
 	VID_NTSC,
 	VID_PAL
-}vid_tvsys_e;
-
-/*-------------------- EXPORTED PRIVATE VARIABLES -----------------------------*/
-#ifdef WMT_VID_C 
-    #define EXTERN
-#else
-    #define EXTERN   extern
-#endif 
-
-EXTERN int vid_dev_tot_num;
-EXTERN int vid_dev_num ;
-
-
-
-#undef EXTERN
-
-/*--------------------- EXPORTED PRIVATE MACROS -------------------------------*/
-
-/*--------------------- EXPORTED PRIVATE FUNCTIONS  ---------------------------*/
-/* extern void  viaapi_xxxx(vdp_Void); *//*Example*/
-#define CMOS_OV7675_I2C_ADDR     0x21
-#define CMOS_OV2640_I2C_ADDR     0x30
-#define CMOS_SIV120B_I2C_ADDR    0x33
-#define CMOS_SIV120D_I2C_ADDR    0x33
-#define CMOS_HI704_I2C_ADDR        0x30
-#define CMOS_OV5640_I2C_ADDR     0x3C
-#define CMOS_SAMSUNG_I2C_ADDR     0x2D
-
-#define CMOS_GC0307_I2C_ADDR     0x21
-#define CMOS_GC0308_I2C_ADDR     0x21
-#define CMOS_GT_I2C_ADDR 	 0x21
-#define  CMOS_HY511_I2C_ADDR     0x20
-#define  CMOS_GC2035_I2C_ADDR     0x3c
-#define CMOS_SIV121D_I2C_ADDR    0x33
+} vid_tvsys_e;
 
 
 int wmt_vid_open(vid_mode mode,cmos_uboot_env_t *cmos_uboot_env);
@@ -195,7 +150,7 @@ int wmt_vid_set_addr(unsigned int y_addr, unsigned int c_addr);
   
 int wmt_vid_set_cur_fb(vid_fb_t *fb);
 vid_fb_t * wmt_vid_get_cur_fb(void);
- int write_array_2_i2c(int slave_addr, char *array_addr, int array_size);
+int write_array_2_i2c(int slave_addr, char *array_addr, int array_size);
 
 int wmt_vid_i2c_write(int chipId ,unsigned int index,char data);
 int wmt_vid_i2c_read(int chipId ,unsigned int index) ;
@@ -205,11 +160,9 @@ int wmt_vid_i2c_write16addr(int chipId ,unsigned int index,unsigned int data);
 int wmt_vid_i2c_read16addr(int chipId ,unsigned int index);
 int wmt_vid_i2c_write16data(int chipId ,unsigned int index,unsigned int data);
 int wmt_vid_i2c_read16data(int chipId ,unsigned int index);
-int wmt_vid_i2c_init( int dev_num, short dev_id, struct i2c_adapter *adapter, struct i2c_client *client);
+int wmt_vid_i2c_init( int dev_num, short dev_id);
 int wmt_vid_i2c_release(void);
 int wmt_vid_i2c_set_same_dev(void);
 
+#endif
 
-#endif /* ifndef WMT_VID_H */
-
-/*=== END wmt-vid.h ==========================================================*/

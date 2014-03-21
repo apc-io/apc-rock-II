@@ -682,8 +682,10 @@ static int platform_legacy_suspend(struct device *dev, pm_message_t mesg)
 	struct platform_device *pdev = to_platform_device(dev);
 	int ret = 0;
 
-	if (dev->driver && pdrv->suspend)
+	if (dev->driver && pdrv->suspend){
+		printk(KERN_ERR"platform_legacy_suspend %s\n",pdrv->driver.name);
 		ret = pdrv->suspend(pdev, mesg);
+	}
 
 	return ret;
 }
@@ -694,8 +696,10 @@ static int platform_legacy_resume(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	int ret = 0;
 
-	if (dev->driver && pdrv->resume)
+	if (dev->driver && pdrv->resume){
+		printk(KERN_ERR"platform_legacy_resume %s\n",pdrv->driver.name);
 		ret = pdrv->resume(pdev);
+	}
 
 	return ret;
 }
@@ -713,8 +717,11 @@ int platform_pm_suspend(struct device *dev)
 		return 0;
 
 	if (drv->pm) {
-		if (drv->pm->suspend)
+		if (drv->pm->suspend){
+			printk("platform_pm_suspend %s start\n",drv->name);
 			ret = drv->pm->suspend(dev);
+			printk("platform_pm_suspend %s end\n",drv->name);
+		}
 	} else {
 		ret = platform_legacy_suspend(dev, PMSG_SUSPEND);
 	}
@@ -731,8 +738,11 @@ int platform_pm_resume(struct device *dev)
 		return 0;
 
 	if (drv->pm) {
-		if (drv->pm->resume)
+		if (drv->pm->resume){
+			printk("platform_pm_resume %s start\n",drv->name);
 			ret = drv->pm->resume(dev);
+			printk("platform_pm_resume %s end\n",drv->name);
+		}
 	} else {
 		ret = platform_legacy_resume(dev);
 	}

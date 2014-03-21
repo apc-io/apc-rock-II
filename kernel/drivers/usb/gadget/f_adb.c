@@ -502,7 +502,8 @@ adb_function_unbind(struct usb_configuration *c, struct usb_function *f)
 	dev->error = 1;
 
 	wake_up(&dev->read_wq);
-
+	extern void wmt_cleanup_done_thread(int number);
+	wmt_cleanup_done_thread(1);
 	adb_request_free(dev->rx_req, dev->ep_out);
 	while ((req = adb_req_get(dev, &dev->tx_idle)))
 		adb_request_free(req, dev->ep_in);

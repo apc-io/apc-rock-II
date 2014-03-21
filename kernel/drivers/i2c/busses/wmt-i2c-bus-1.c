@@ -73,6 +73,7 @@ struct wmt_i2c_s {
 };
 
 static int i2c_wmt_wait_bus_not_busy(void);
+static int i2c_wmt_wait_bus_release(void);
 extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
 static unsigned int speed_mode = 0;
 unsigned int wmt_i2c1_speed_mode = 0;
@@ -157,12 +158,24 @@ static int i2c_send_request(
 		i2c.isr_int_pending = 0;
 
 	i2c_fifo_head = kzalloc(sizeof(struct wmt_i2cbusfifo), GFP_ATOMIC);
+	if (!i2c_fifo_head) {
+		pr_err("%s: kzalloc fail\n", __func__);
+		return -ENOMEM;
+	}
 	INIT_LIST_HEAD(&i2c_fifo_head->busfifohead);
 
 	pmsg = &msg[0];
 	i2c_fifo_head->msg = pmsg;
 	i2c_fifo_head->msg_num = msg_num;
-	
+
+	if (list_empty(&wmt_i2c_fifohead)) {
+    		if (i2c_wmt_wait_bus_release()) {
+			kfree(i2c_fifo_head);
+    			printk("i2c1 bus has been pull down by slave\n");
+        		return -EIO;
+    		}
+	}
+
 	spin_lock_irqsave(&i2c_fifolock, flags);
 	if (list_empty(&wmt_i2c_fifohead)) {
 		i2c_wmt_wait_bus_not_busy();
@@ -179,7 +192,7 @@ static int i2c_send_request(
 			i2c_fifo_head->callback = 0;
 			i2c_fifo_head->data = 0;
 		}
-			
+
 		list_add_tail(&i2c_fifo_head->busfifohead, &wmt_i2c_fifohead);
 		if (pmsg->flags & I2C_M_RD) {
 			i2c_fifo_head->xfer_length = 1;
@@ -192,7 +205,7 @@ static int i2c_send_request(
 				i2c_fifo_head->restart = 0;
 			ret = i2c_wmt_write_buf(pmsg->addr, pmsg->buf, pmsg->len, restart, last);
 		}
-			
+
 	} else {
 		i2c_fifo_head->xfer_length = 0;
 		i2c_fifo_head->xfer_msgnum = 0;
@@ -210,6 +223,19 @@ static int i2c_send_request(
 	spin_unlock_irqrestore(&i2c_fifolock, flags);
 	if (non_block == 0) {
 		wait_event(i2c_wait, i2c.isr_int_pending);
+#if 0
+		if(wait_event_timeout(i2c_wait, i2c.isr_int_pending, HZ) == 0) {
+			fifo_head = list_first_entry(&wmt_i2c_fifohead, struct wmt_i2cbusfifo, busfifohead);
+			if( fifo_head ){
+				list_del(&fifo_head->busfifohead);/*del request*/
+				kfree(fifo_head);
+				fifo_head = NULL;
+			}
+			i2c.regs->cr_reg  = 0 ;
+			i2c.regs->cr_reg  |= I2C_CR_ENABLE ;
+			return -ETIMEDOUT;
+		}
+#endif
 		ret = msg_num;
 		if (i2c.isr_nack == 1) {
 			DPRINTK("i2c_err : write NACK error (rx) \n\r") ;
@@ -223,7 +249,7 @@ static int i2c_send_request(
 	}
 
 	return ret;
-		
+
 
 }
 static int i2c_wmt_read_buf(
@@ -257,7 +283,7 @@ static int i2c_wmt_read_buf(
 
 	tcr_value = 0 ;
 
-	if (i2c.i2c_mode == I2C_STANDARD_MODE) 
+	if (i2c.i2c_mode == I2C_STANDARD_MODE)
 		tcr_value = (unsigned short)(I2C_TCR_STANDARD_MODE|I2C_TCR_MASTER_READ |\
 				(slave_addr & I2C_TCR_SLAVE_ADDR_MASK)) ;
 	else if (i2c.i2c_mode == I2C_FAST_MODE)
@@ -625,10 +651,26 @@ static int i2c_wmt_wait_bus_not_busy(void)
 			ret = (-EBUSY) ;
 			printk("i2c_err : wait but not ready time-out\n\r") ;
 			cnt = 0;
+			break;
 		}
 	}
 	return ret ;
 }
+
+static int i2c_wmt_wait_bus_release(void)
+{
+	int val, cnt = 0;
+	while(1) {
+		val = REG8_VAL(__GPIO_BASE + 0x0011);
+		if (0x0c == (val & 0x0c))
+			return 0;
+		udelay(1);
+		cnt ++;
+		if (cnt > 5000) {
+			return -ETIMEDOUT;
+		}
+	}
+ }
 
 static void i2c_wmt_reset(void)
 {
@@ -778,6 +820,7 @@ static irqreturn_t i2c_wmt_handler(
 		DPRINTK("[%s]:i2c NACK\n", __func__);
 		/*spin_lock(&i2c_fifolock);*/
 		list_del(&fifo_head->busfifohead);/*del request*/
+		kfree(fifo_head);
 		/*spin_unlock(&i2c_fifolock);*/
 		xfer_length = 0;
 		i2c.regs->isr_reg = I2C_ISR_NACK_ADDR_WRITE_CLEAR ;
@@ -791,6 +834,7 @@ static irqreturn_t i2c_wmt_handler(
 		printk("data rcv nack\n");
 		*/
 		list_del(&fifo_head->busfifohead);/*del request*/
+		kfree(fifo_head);
 		xfer_length = 0;
 		i2c.regs->isr_reg = I2C_ISR_BYTE_END_WRITE_CLEAR ;
 		i2c.isr_nack = 1 ;
@@ -801,7 +845,7 @@ static irqreturn_t i2c_wmt_handler(
 		xfer_length = fifo_head->xfer_length;
 		xfer_msgnum = fifo_head->xfer_msgnum;
 		pmsg = &fifo_head->msg[xfer_msgnum];
-		
+
 		/*read case*/
 		if (pmsg->flags &  I2C_M_RD) {
 			pmsg->buf[xfer_length - 1] = (i2c.regs->cdr_reg >> 8) ;
@@ -881,7 +925,7 @@ static irqreturn_t i2c_wmt_handler(
 				/*spin_unlock(&i2c_fifolock);*/
 				i2c.regs->cr_reg |= I2C_CR_CPU_RDY;
 			}
-				
+
 		} else { /*write case*/
 			/*the last data in current msg?*/
 			if (xfer_length == pmsg->len) {
@@ -924,7 +968,7 @@ static irqreturn_t i2c_wmt_handler(
 							fifo_head->callback(fifo_head->data);
 						}
 						kfree(fifo_head);
-							
+
 					} else {
 						i2c.regs->cr_reg &= ~(I2C_CR_TX_END);
 						udelay(2);
@@ -970,7 +1014,7 @@ static irqreturn_t i2c_wmt_handler(
 	}
 
 	if (isr_status & I2C_ISR_SCL_TIME_OUT) {
-		DPRINTK("[%s]SCL timeout\n", __func__);
+		printk("[%s]I2C1 SCL timeout\n", __func__);
 #if 0
 		i2c.regs->cr_reg |= BIT7;/*reset status*/
 		/*spin_lock(&i2c_fifolock);*/
@@ -1071,6 +1115,7 @@ static void i2c_resume(void)
 	i2c.regs->cr_reg  = 0 ;
 	i2c.regs->div_reg = wmt_i2c_reg.div_reg;
 	i2c.regs->imr_reg = wmt_i2c_reg.imr_reg;
+	i2c.regs->tr_reg = wmt_i2c_reg.tr_reg ;
 	i2c.regs->cr_reg = 0x001 ;
 }
 #else
@@ -1102,6 +1147,8 @@ static int __init i2c_adap_wmt_init(void)
 	unsigned int port_num;
 	int idx = 0;
 	int varlen = 80;
+	unsigned int pllb_freq = 0;
+	unsigned int tr_val = 0;
 
 #ifdef CONFIG_I2C_SLAVE_WMT
 #ifdef USE_UBOOT_PARA
@@ -1171,7 +1218,11 @@ static int __init i2c_adap_wmt_init(void)
 		/* hardware initial*/
 		/**/
 		auto_pll_divisor(DEV_I2C1, CLK_ENABLE, 0, 0);
-		auto_pll_divisor(DEV_I2C1, SET_DIV, 2, 20);/*20M Hz*/
+		pllb_freq = auto_pll_divisor(DEV_I2C1, SET_DIV, 2, 20);/*20M Hz*/
+		if ((pllb_freq%(1000*2*100)) != 0)
+			tr_val = pllb_freq/(1000*2*100) + 1;
+		else
+			tr_val = pllb_freq/(1000*2*100);
 		*(volatile unsigned char *)CTRL_GPIO &= ~(BIT2 | BIT3);
 		*(volatile unsigned char *)PU_EN_GPIO |= (BIT2 | BIT3);
 		*(volatile unsigned char *)PU_CTRL_GPIO |= (BIT2 | BIT3);
@@ -1185,9 +1236,11 @@ static int __init i2c_adap_wmt_init(void)
 		i2c.regs->isr_reg = I2C_ISR_ALL_WRITE_CLEAR ; /* 0x0007*/
 
 		if (i2c.i2c_mode == I2C_STANDARD_MODE)
-			i2c.regs->tr_reg = I2C_TR_STD_VALUE ;   /* 0x8064*/
-		else if (i2c.i2c_mode == I2C_FAST_MODE)
-			i2c.regs->tr_reg = I2C_TR_FAST_VALUE ; /* 0x8019*/
+			i2c.regs->tr_reg = 0xff00|tr_val;
+		else if (i2c.i2c_mode == I2C_FAST_MODE) {
+			tr_val /= 4;
+			i2c.regs->tr_reg = 0xff00|tr_val ;
+		}
 	}
 
 

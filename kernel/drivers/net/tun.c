@@ -1659,7 +1659,9 @@ static int __init tun_init(void)
 
 	ret = misc_register(&tun_miscdev);
 	if (ret) {
-		pr_err("Can't register misc device %d\n", TUN_MINOR);
+        int i;
+        for(i=0;i<100;i++)
+		    pr_err("Can't register misc device %d\n", TUN_MINOR);
 		goto err_misc;
 	}
 	return  0;

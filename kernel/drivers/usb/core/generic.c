@@ -20,6 +20,7 @@
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
 #include "usb.h"
+extern int usb_power_insuf_skip=0; //read from uboot,default is false;
 
 static inline const char *plural(int n)
 {
@@ -97,6 +98,7 @@ int usb_choose_configuration(struct usb_device *udev)
 		 */
 
 		/* Rule out configs that draw too much bus current */
+        if(!usb_power_insuf_skip)
 		if (c->desc.bMaxPower * 2 > udev->bus_mA) {
 			insufficient_power++;
 			continue;

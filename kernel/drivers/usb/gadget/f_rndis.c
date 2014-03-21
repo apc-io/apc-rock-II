@@ -458,7 +458,7 @@ static void rndis_command_complete(struct usb_ep *ep, struct usb_request *req)
 			status, req->actual, req->length);
 //	spin_unlock(&dev->lock);
 }
-
+extern bool get_rndis_initialized(void);
 static int
 rndis_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
 {
@@ -469,7 +469,8 @@ rndis_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
 	u16			w_index = le16_to_cpu(ctrl->wIndex);
 	u16			w_value = le16_to_cpu(ctrl->wValue);
 	u16			w_length = le16_to_cpu(ctrl->wLength);
-
+	if(!get_rndis_initialized())
+		return;
 	/* composite driver infrastructure handles everything except
 	 * CDC class messages; interface activation uses set_alt().
 	 */
@@ -614,7 +615,7 @@ static void rndis_disable(struct usb_function *f)
 	if (!rndis->notify->driver_data)
 		return;
 
-	DBG(cdev, "rndis deactivated\n");
+	printk("rndis deactivated\n");
 
 	rndis_uninit(rndis->config);
 	gether_disconnect(&rndis->port);

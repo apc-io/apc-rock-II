@@ -122,9 +122,28 @@ typedef struct {
 	unsigned short hdmi_phy_addr;
 } edid_info_t;
 
+#define VENDOR_NAME_LEN              4
+#define MONITOR_NAME_LEN             20
+#define AUD_SAD_NUM                  32
+typedef struct {
+	char flag; /* 0: sad available, 1: sad invalid */
+	char sad_byte[3];
+} sad_t;
+
+typedef struct {
+	char vendor_name[VENDOR_NAME_LEN];
+	char monitor_name[MONITOR_NAME_LEN];
+} tv_name_t;
+
+typedef struct {
+	tv_name_t tv_name;
+	sad_t sad[AUD_SAD_NUM];
+} edid_parsed_t;
+
 extern edid_info_t edid_info;
 extern int edid_msg_enable;
 extern int edid_disable;
+extern edid_parsed_t edid_parsed;
 
 extern int edid_parse(char *edid, edid_info_t *info);
 extern int edid_find_support(edid_info_t *info, unsigned int resx,

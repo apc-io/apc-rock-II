@@ -10,9 +10,11 @@ obj-$(CONFIG_LCD_AUO_A080SN01) += lcd-AUO-A080SN01.o
 obj-$(CONFIG_LCD_EKING_EK08009) += lcd-EKING-EK08009-70135.o
 obj-$(CONFIG_LCD_HANNSTAR_HSD101PFW2) += lcd-HANNSTAR-HSD101PFW2.o
 obj-y += lcd-lvds-1024x600.o
+obj-y += cs8556.o
+obj-y += lcd-b079xan01.o
 
 obj-$(CONFIG_LCD_WMT) += lcd.o
-obj-$(CONFIG_DVI_VT1632_WMT) += vt1632.o
+obj-$(CONFIG_DVI_VT1632_WMT) += vt1632.o vt1625.o
 #obj-$(CONFIG_HDMI_CAT6610_WMT) += cat6612.o cat6610/
 #obj-$(CONFIG_HDMI_AD9389_WMT) += ad9389.o
 #obj-$(CONFIG_EXTTV_ADV7393_WMT) += ad7393.o

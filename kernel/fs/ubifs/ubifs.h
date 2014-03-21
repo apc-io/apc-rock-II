@@ -36,6 +36,7 @@
 #include <linux/mtd/ubi.h>
 #include <linux/pagemap.h>
 #include <linux/backing-dev.h>
+#include <linux/notifier.h>
 #include "ubifs-media.h"
 
 /* Version of this UBIFS implementation */
@@ -1221,6 +1222,7 @@ struct ubifs_debug_info;
 struct ubifs_info {
 	struct super_block *vfs_sb;
 	struct backing_dev_info bdi;
+	struct notifier_block reboot_notifier;
 
 	ino_t highest_inum;
 	unsigned long long max_sqnum;

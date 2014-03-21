@@ -170,7 +170,7 @@ EXTERN struct rmt_dev  rmt_dev_tbl[ ] = {
 			[0x08] = KEY_ZOOMIN,     /* zoom in */
 			[0x0d] = KEY_UP,         /* up */
 			[0x4e] = KEY_LEFT,       /* left */
-			[0x19] = KEY_ENTER,      /* OK */    //[0x19] = KEY_REPLY,      /* OK */
+			[0x19] = KEY_REPLY,      /* OK */
 			[0x0c] = KEY_RIGHT,      /* right */
 			[0x4f] = KEY_DOWN,       /* down */
 			[0x09] = KEY_PAGEUP,     /* page up */

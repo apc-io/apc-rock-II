@@ -93,16 +93,16 @@ struct usb_serial *usb_serial_get_by_index(unsigned index)
 }
 
 static struct usb_serial *get_free_serial(struct usb_serial *serial,
-					int num_ports, unsigned int *minor)
+					int num_ports, unsigned int *minor,int startIndex)
 {
 	unsigned int i, j;
 	int good_spot;
 
 	dbg("%s %d", __func__, num_ports);
+	*minor = startIndex;
 
-	*minor = 0;
 	mutex_lock(&table_lock);
-	for (i = 0; i < SERIAL_TTY_MINORS; ++i) {
+	for (i = startIndex; i < SERIAL_TTY_MINORS; ++i) {
 		if (serial_table[i])
 			continue;
 
@@ -736,7 +736,7 @@ int usb_serial_probe(struct usb_interface *interface,
 	int num_bulk_out = 0;
 	int num_ports = 0;
 	int max_endpoints;
-
+	int startIndex = 0;
 	mutex_lock(&table_lock);
 	type = search_serial_device(interface);
 	if (!type) {
@@ -1066,8 +1066,10 @@ int usb_serial_probe(struct usb_interface *interface,
 	 * registered.
 	 */
 	serial->disconnected = 1;
+	if(!strcmp(type->driver.name,"pl2303")||!strcmp(type->driver.name,"ftdi_sio"))
+		startIndex = 5;
 
-	if (get_free_serial(serial, num_ports, &minor) == NULL) {
+	if (get_free_serial(serial, num_ports, &minor, startIndex) == NULL) {
 		dev_err(&interface->dev, "No more free serial devices\n");
 		goto probe_error;
 	}

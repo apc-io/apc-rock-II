@@ -41,15 +41,24 @@ WonderMedia Technologies, Inc.
 #include <asm/cacheflush.h>
 #include <asm/hardware/cache-l2x0.h>
 
+#include <mach/wmt_secure.h>
+
+#include <linux/gpio.h>
+#include <mach/wmt_iomux.h>
+
+
+
+
+
 //#define CONFIG_KBDC_WAKEUP
 //#define KB_WAKEUP_SUPPORT
 //#define MOUSE_WAKEUP_SUPPORT
 
 #define	SOFT_POWER_SUPPORT
 #define	RTC_WAKEUP_SUPPORT
-#ifdef CONFIG_RMTCTL_WonderMedia //define if CIR menuconfig enable
+//#ifdef CONFIG_RMTCTL_WonderMedia //define if CIR menuconfig enable
 #define CIR_WAKEUP_SUPPORT
-#endif
+//#endif
 #define KEYPAD_POWER_SUPPORT
 #define PMWT_C_WAKEUP(src, type)  ((type & PMWT_TYPEMASK) << (((src - 24) & PMWT_WAKEUPMASK) * 4))
 
@@ -85,6 +94,16 @@ enum wakeup_intr_tri_src_e {
 };
 
 static struct wakeup_source *wmt_ws;
+
+static struct workqueue_struct *wakeup_queue;
+static struct delayed_work wakeupwork;
+
+static struct {
+	bool have_switch;
+	unsigned int gpio_no;
+	unsigned int wakeup_source;
+}hall_switch;
+
 
 #define DRIVER_NAME	"PMC"
 #if defined(CONFIG_PM_RTC_IS_GMT) && defined(RTC_WAKEUP_SUPPORT)
@@ -188,6 +207,7 @@ unsigned int en_static_address_filtering = 0;
 unsigned int address_filtering_start = 0xD8000000;
 unsigned int address_filtering_end = 0xD9000000;
 static volatile unsigned int l2x0_base;
+unsigned int cpu_trustzone_enabled = 0;
 #endif
 
 //gri
@@ -272,6 +292,11 @@ static void run_shutdown(struct work_struct *work)
 	wmt_pwrbtn_debounce_value(power_up_debounce_value);
 	ret = call_usermodehelper(argv[0], argv, envp_shutdown, 0);
 }
+
+//kevin add support wakeup3/wakeup0 to wakeup ap
+#include <mach/viatel.h>
+irqreturn_t viatelcom_irq_cp_wake_ap(int irq, void *data);
+extern int gpio_viatel_4wire[4];
 
 void pmc_enable_wakeup_isr(enum wakeup_src_e wakeup_event, unsigned int type)
 {	  
@@ -700,6 +725,63 @@ void pmc_disable_wakeup_event(enum wakeup_src_e wakeup_event)
 }
 EXPORT_SYMBOL(pmc_disable_wakeup_event);
 
+
+static void wakeup_func(struct work_struct *work)
+{	
+	struct file *fp;
+	mm_segment_t fs;
+	loff_t pos=0;
+	unsigned long flags;
+	char buf[3];
+	
+	fp = filp_open("/sys/class/backlight/pwm-backlight.0/brightness", O_RDWR, 0777);
+
+	if (IS_ERR(fp)) {
+        printk(KERN_ERR"open file error\n");
+        return;
+    }
+	
+	fs = get_fs();
+    set_fs(KERNEL_DS);
+	vfs_read(fp, buf, sizeof(buf), &pos);
+	filp_close(fp, NULL);
+    set_fs(fs);
+	//printk(KERN_ERR"%s buf %s\n",__FUNCTION__,buf);
+	if(gpio_get_value(hall_switch.gpio_no)){
+		if(strncmp(buf,"0",1))
+		{
+			return;
+		}
+			
+	}
+	else{		
+		if(!strncmp(buf,"0",1))
+		{
+			return;
+		}
+	}
+
+#ifdef KEYPAD_POWER_SUPPORT
+			if(kpadPower_dev) {
+	
+				spin_lock_irqsave(&kpadPower_lock, flags);
+				if(!powerKey_is_pressed) {
+					powerKey_is_pressed = 1; 
+					input_report_key(kpadPower_dev, KEY_POWER, 1); //power key is pressed
+					input_sync(kpadPower_dev);
+					pressed_jiffies = jiffies;
+					wmt_pwrbtn_debounce_value(power_up_debounce_value);
+					DPRINTK("\n[%s]power key pressed -->\n",__func__);
+					time1 = jiffies_to_msecs(jiffies);
+					__pm_wakeup_event(wmt_ws, (MSEC_PER_SEC >> 4));
+				}
+				//disable_irq(IRQ_PMC_WAKEUP);
+				spin_unlock_irqrestore(&kpadPower_lock, flags);
+				mod_timer(&kpadPower_timer, jiffies + power_button_timeout);
+			}
+	#endif
+}
+
 static irqreturn_t pmc_wakeup_isr(int this_irq, void *dev_id)
 {
 	unsigned int status_i;
@@ -708,11 +790,38 @@ static irqreturn_t pmc_wakeup_isr(int this_irq, void *dev_id)
 	status_i = PMCIS_VAL;
 
 	rmb();
+
+
+    //kevin add for wakeup3 to wakeup ap
+	if(status_i & (gpio_viatel_4wire[GPIO_VIATEL_USB_MDM_WAKE_AP]==149?BIT0:BIT2)){
+		//printk("call viatelcom_irq_cp_wake_ap\n");
+		viatelcom_irq_cp_wake_ap(this_irq,dev_id);
+		PMCIS_VAL |= (gpio_viatel_4wire[GPIO_VIATEL_USB_MDM_WAKE_AP]==149?BIT0:BIT2);
+		
+	}
+
+	/*
+	 * TODO : wakeup event and  interrupt event share the same interrupt
+	 * source IRQ_PMC. we should make a mechanism like 'request_irq' to
+	 * register interrupt event callback function, and call the right
+	 * function here.
+	 */
+	/* DCDET interrupt */
+	//if (status_i & BIT27) {
+	//	extern void dcdet_isr_callback(void);
+	//	dcdet_isr_callback();
+	//	PMCIS_VAL |= BIT0;
+	//}
+
+	if(hall_switch.have_switch && (status_i & (1<<(hall_switch.wakeup_source)))){
+		//printk(KERN_ERR"call wakeup0\n");
+		queue_delayed_work(wakeup_queue, &wakeupwork, msecs_to_jiffies(50));
+		pmc_clear_intr_status(hall_switch.wakeup_source);
+	}
 	
 	if (status_i & BIT14) {
-
-		pmc_clear_intr_status(WKS_PWRBTN);
 		
+			pmc_clear_intr_status(WKS_PWRBTN);
 	#ifdef KEYPAD_POWER_SUPPORT
 		if(kpadPower_dev) {
 
@@ -726,11 +835,6 @@ static irqreturn_t pmc_wakeup_isr(int this_irq, void *dev_id)
 				DPRINTK("\n[%s]power key pressed -->\n",__func__);
 				time1 = jiffies_to_msecs(jiffies);
 				__pm_wakeup_event(wmt_ws, (MSEC_PER_SEC >> 4));
-			} else {
-				input_event(kpadPower_dev, EV_KEY, KEY_POWER, 2); // power key repeat
-				input_sync(kpadPower_dev);
-				DPRINTK("\n[%s]power key repeat\n",__func__);
-
 			}
 			//disable_irq(IRQ_PMC_WAKEUP);
 			spin_unlock_irqrestore(&kpadPower_lock, flags);
@@ -981,7 +1085,7 @@ static void wmt_pm_standby(void)
 	volatile unsigned int hib_phy_addr = 0,base = 0;    
 
 #ifdef CONFIG_CACHE_L2X0
-	__u32 power_cntrl;
+	__u32 power_ctrl;
 	
 	if( l2x0_onoff == 1)
 	{
@@ -1010,26 +1114,53 @@ static void wmt_pm_standby(void)
 	{
 		if (!(readl_relaxed(l2x0_base + L2X0_CTRL) & 1))
 		{
-			/* l2x0 controller is disabled */
-			writel_relaxed(l2x0_aux, l2x0_base + L2X0_AUX_CTRL);
-
-			if( en_static_address_filtering == 1 )
+			if(cpu_trustzone_enabled == 0)
 			{
-				writel_relaxed(address_filtering_end, l2x0_base + 0xC04);
-				writel_relaxed((address_filtering_start | 0x01), l2x0_base + 0xC00);
+				/* l2x0 controller is disabled */
+				writel_relaxed(l2x0_aux, l2x0_base + L2X0_AUX_CTRL);
+
+				if( en_static_address_filtering == 1 )
+				{
+					writel_relaxed(address_filtering_end, l2x0_base + 0xC04);
+					writel_relaxed((address_filtering_start | 0x01), l2x0_base + 0xC00);
+				}
+
+				writel_relaxed(0x110, l2x0_base + L2X0_TAG_LATENCY_CTRL);
+				writel_relaxed(0x110, l2x0_base + L2X0_DATA_LATENCY_CTRL);
+				power_ctrl = readl_relaxed(l2x0_base + L2X0_POWER_CTRL) | L2X0_DYNAMIC_CLK_GATING_EN | L2X0_STNDBY_MODE_EN;
+				writel_relaxed(power_ctrl, l2x0_base + L2X0_POWER_CTRL);
+
+				writel_relaxed(l2x0_prefetch_ctrl, l2x0_base + L2X0_PREFETCH_CTRL);
+
+				outer_cache.inv_all();
+
+				/* enable L2X0 */
+				writel_relaxed(1, l2x0_base + L2X0_CTRL);
 			}
+			else
+			{
+				/* l2x0 controller is disabled */
+				wmt_smc(WMT_SMC_CMD_PL310AUX, l2x0_aux);
+				
+				if( en_static_address_filtering == 1 )
+				{
+					wmt_smc(WMT_SMC_CMD_PL310FILTER_END, address_filtering_end);
+					wmt_smc(WMT_SMC_CMD_PL310FILTER_START, (address_filtering_start | 0x01));
+				}
 
-			writel_relaxed(0x110, l2x0_base + L2X0_TAG_LATENCY_CTRL);
-			writel_relaxed(0x110, l2x0_base + L2X0_DATA_LATENCY_CTRL);
-			power_cntrl = readl_relaxed(l2x0_base + L2X0_POWER_CTRL) | L2X0_DYNAMIC_CLK_GATING_EN | L2X0_STNDBY_MODE_EN;
-			writel_relaxed(power_cntrl, l2x0_base + L2X0_POWER_CTRL);
+				wmt_smc(WMT_SMC_CMD_PL310TAG_LATENCY, 0x110);
+				wmt_smc(WMT_SMC_CMD_PL310DATA_LATENCY, 0x110);
+				power_ctrl = readl_relaxed(l2x0_base + L2X0_POWER_CTRL) | L2X0_DYNAMIC_CLK_GATING_EN | L2X0_STNDBY_MODE_EN;
+				wmt_smc(WMT_SMC_CMD_PL310POWER, power_ctrl);
 
-			writel_relaxed(l2x0_prefetch_ctrl, l2x0_base + L2X0_PREFETCH_CTRL);
+				wmt_smc(WMT_SMC_CMD_PL310PREFETCH, l2x0_prefetch_ctrl);
 
-			outer_cache.inv_all();
+				outer_cache.inv_all();
 
-			/* enable L2X0 */
-			writel_relaxed(1, l2x0_base + L2X0_CTRL);
+				/* enable L2X0 */
+				wmt_smc(WMT_SMC_CMD_PL310CTRL, 1);
+			}
+		
 		}
 	
 	}
@@ -1037,6 +1168,8 @@ static void wmt_pm_standby(void)
 }
 
 extern void wmt_assem_suspend(void);
+extern void wmt_assem_secure_suspend(void);
+
 extern char use_dvfs;
 /* wmt_pm_suspend()
  *
@@ -1055,7 +1188,7 @@ static void wmt_pm_suspend(void)
 
 
 #ifdef CONFIG_CACHE_L2X0
-	__u32 power_cntrl;
+	__u32 power_ctrl;
 #endif
 
 /* FIXME */
@@ -1123,32 +1256,58 @@ static void wmt_pm_suspend(void)
 	{
 		if (!(readl_relaxed(l2x0_base + L2X0_CTRL) & 1))
 		{
-			/* l2x0 controller is disabled */
-			writel_relaxed(l2x0_aux, l2x0_base + L2X0_AUX_CTRL);
-
-			if( en_static_address_filtering == 1 )
+			if(cpu_trustzone_enabled == 0)
 			{
-				writel_relaxed(address_filtering_end, l2x0_base + 0xC04);
-				writel_relaxed((address_filtering_start | 0x01), l2x0_base + 0xC00);
+				/* l2x0 controller is disabled */
+				writel_relaxed(l2x0_aux, l2x0_base + L2X0_AUX_CTRL);
+			
+				if( en_static_address_filtering == 1 )
+				{
+					writel_relaxed(address_filtering_end, l2x0_base + 0xC04);
+					writel_relaxed((address_filtering_start | 0x01), l2x0_base + 0xC00);
+				}
+
+				writel_relaxed(0x110, l2x0_base + L2X0_TAG_LATENCY_CTRL);
+				writel_relaxed(0x110, l2x0_base + L2X0_DATA_LATENCY_CTRL);
+				power_ctrl = readl_relaxed(l2x0_base + L2X0_POWER_CTRL) | L2X0_DYNAMIC_CLK_GATING_EN | L2X0_STNDBY_MODE_EN;
+				writel_relaxed(power_ctrl, l2x0_base + L2X0_POWER_CTRL);
+
+				writel_relaxed(l2x0_prefetch_ctrl, l2x0_base + L2X0_PREFETCH_CTRL);
+
+	  			outer_cache.inv_all(); 
+
+				/* enable L2X0 */
+				writel_relaxed(1, l2x0_base + L2X0_CTRL);
 			}
+			else
+			{
+				/* l2x0 controller is disabled */
+				wmt_smc(WMT_SMC_CMD_PL310AUX, l2x0_aux);
+			
+				if( en_static_address_filtering == 1 )
+				{
+					wmt_smc(WMT_SMC_CMD_PL310FILTER_END, address_filtering_end);
+					wmt_smc(WMT_SMC_CMD_PL310FILTER_START, (address_filtering_start | 0x01));
+				}
 
-			writel_relaxed(0x110, l2x0_base + L2X0_TAG_LATENCY_CTRL);
-			writel_relaxed(0x110, l2x0_base + L2X0_DATA_LATENCY_CTRL);
-			power_cntrl = readl_relaxed(l2x0_base + L2X0_POWER_CTRL) | L2X0_DYNAMIC_CLK_GATING_EN | L2X0_STNDBY_MODE_EN;
-			writel_relaxed(power_cntrl, l2x0_base + L2X0_POWER_CTRL);
+				wmt_smc(WMT_SMC_CMD_PL310TAG_LATENCY, 0x110);
+				wmt_smc(WMT_SMC_CMD_PL310DATA_LATENCY, 0x110);
+				power_ctrl = readl_relaxed(l2x0_base + L2X0_POWER_CTRL) | L2X0_DYNAMIC_CLK_GATING_EN | L2X0_STNDBY_MODE_EN;
+				wmt_smc(WMT_SMC_CMD_PL310POWER, power_ctrl);
 
-			writel_relaxed(l2x0_prefetch_ctrl, l2x0_base + L2X0_PREFETCH_CTRL);
+				wmt_smc(WMT_SMC_CMD_PL310PREFETCH, l2x0_prefetch_ctrl);
 
-  			outer_cache.inv_all(); 
+	  			outer_cache.inv_all(); 
 
-			/* enable L2X0 */
-			writel_relaxed(1, l2x0_base + L2X0_CTRL);
+				/* enable L2X0 */
+				wmt_smc(WMT_SMC_CMD_PL310CTRL, 1);
+			}
 		}
 	}
 #endif
 
 	result = PM_device_PreResume();
-	if (!result)
+	if (result != 0)
 		printk("PM_device_PreResume fail\n");
 }
 
@@ -1761,6 +1920,11 @@ static int __init wmt_pm_init(void)
 		sscanf(buf,"%d:%x:%x:%d:%x:%x",&l2x0_onoff, &l2x0_aux, &l2x0_prefetch_ctrl, &en_static_address_filtering, &address_filtering_start, &address_filtering_end);
         if( l2x0_onoff == 1)
                 l2x0_base = (volatile unsigned int) ioremap(0xD9000000, SZ_4K);
+
+	if (wmt_getsyspara("wmt.secure.param",buf,&varlen) == 0)
+		sscanf(buf,"%d",&cpu_trustzone_enabled);
+	if(cpu_trustzone_enabled != 1)
+		cpu_trustzone_enabled = 0;
 #endif
 
 	/* Press power button (either hard-power or soft-power) will trigger a power button wakeup interrupt*/
@@ -1850,6 +2014,34 @@ static int __init wmt_pm_init(void)
 
 	//enable power button intr
 	pmc_enable_wakeup_isr(WKS_PWRBTN, 0);
+
+	memset(buf ,0, sizeof(buf));
+	varlen = sizeof(buf);
+	if ((wmt_getsyspara("wmt.gpo.hall_switch", buf, &varlen) == 0)) {
+		int ret = sscanf(buf, "%d:%d",
+					   &hall_switch.gpio_no,
+					   &hall_switch.wakeup_source
+				       );
+		
+		//printk(KERN_ERR"hall_switch gpiono:%d ws:%d\n",hall_switch.gpio_no,hall_switch.wakeup_source);
+		ret = gpio_request(hall_switch.gpio_no, "hall_switch"); 
+		if(ret < 0) {
+			printk(KERN_ERR"gpio request fail for hall_switch\n");
+			goto hswitch_done;
+		}
+		
+		gpio_direction_input(hall_switch.gpio_no);
+		wmt_gpio_setpull(hall_switch.gpio_no, WMT_GPIO_PULL_UP);
+	
+		pmc_enable_wakeup_isr(hall_switch.wakeup_source,4);
+		wakeup_queue=create_workqueue("wakeup0");
+		INIT_DELAYED_WORK(&wakeupwork, wakeup_func);
+		hall_switch.have_switch = 1;
+	}
+
+hswitch_done:
+
+	
 	
 	return 0;
 }

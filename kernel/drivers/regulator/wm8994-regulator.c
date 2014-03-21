@@ -282,7 +282,7 @@ static __devinit int wm8994_ldo_probe(struct platform_device *pdev)
 	return 0;
 
 err_gpio:
-	if (gpio_is_valid(ldo->enable))
+	if (ldo->enable && gpio_is_valid(ldo->enable))
 		gpio_free(ldo->enable);
 err:
 	return ret;
@@ -295,7 +295,7 @@ static __devexit int wm8994_ldo_remove(struct platform_device *pdev)
 	platform_set_drvdata(pdev, NULL);
 
 	regulator_unregister(ldo->regulator);
-	if (gpio_is_valid(ldo->enable))
+	if (ldo->enable && gpio_is_valid(ldo->enable))
 		gpio_free(ldo->enable);
 
 	return 0;

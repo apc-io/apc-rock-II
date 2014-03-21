@@ -75,8 +75,8 @@ lcd_parm_t lcd_oem_parm = {
 		.vmode = 0,
 		.flag = 0,
 	},
-	.initial = lcd_oem_initial,
-	.uninitial = lcd_oem_uninitial
+//	.initial = lcd_oem_initial,
+//	.uninitial = lcd_oem_uninitial
 };
 
 static void lcd_oem_1024x600_initial(void)
@@ -138,8 +138,8 @@ lcd_parm_t lcd_oem_parm_1024x600 = {
 		.flag = 0,
 #endif
 	},
-	.initial = lcd_oem_1024x600_initial,
-	.uninitial = lcd_oem_1024x600_uninitial,
+//	.initial = lcd_oem_1024x600_initial,
+//	.uninitial = lcd_oem_1024x600_uninitial,
 };
 
 lcd_parm_t lcd_oem_parm_1024x768 = {
@@ -161,8 +161,8 @@ lcd_parm_t lcd_oem_parm_1024x768 = {
 		.vmode = 0,
 		.flag = 0,
 	},
-	.initial = lcd_oem_initial,
-	.uninitial = lcd_oem_uninitial
+//	.initial = lcd_oem_initial,
+//	.uninitial = lcd_oem_uninitial
 };
 
 lcd_parm_t lcd_oem_parm_1366x768 = {
@@ -184,8 +184,8 @@ lcd_parm_t lcd_oem_parm_1366x768 = {
 		.vmode = 0,
 		.flag = 0,
 	},
-	.initial = lcd_oem_initial,
-	.uninitial = lcd_oem_uninitial
+//	.initial = lcd_oem_initial,
+//	.uninitial = lcd_oem_uninitial
 };
 
 lcd_parm_t lcd_oem_parm_800x480 = {
@@ -207,8 +207,8 @@ lcd_parm_t lcd_oem_parm_800x480 = {
 		.vmode = 0,
 		.flag = 0,
 	},
-	.initial = lcd_oem_1024x600_initial,
-	.uninitial = lcd_oem_1024x600_uninitial
+//	.initial = lcd_oem_initial,
+//	.uninitial = lcd_oem_uninitial
 };
 
 static void lcd_oem_1280x800_initial(void)
@@ -233,6 +233,29 @@ static void lcd_oem_1280x800_uninitial(void)
 	lcd_enable_signal(0); /* turn off singal */
 }
 
+lcd_parm_t lcd_oem_parm_800x1280 = {
+	.bits_per_pixel = 24,
+	.capability = LCD_CAP_CLK_HI,
+	.vmode = {
+		.name = "WY101ML369IN30A",
+		.refresh = 60,
+		.xres = 800,
+		.yres = 1280,
+		.pixclock = KHZ2PICOS(71100),
+		.left_margin = 70,
+		.right_margin = 80,
+		.upper_margin = 10,
+		.lower_margin = 10,
+		.hsync_len = 10,
+		.vsync_len = 3,
+		.sync = 0,
+		.vmode = 0,
+		.flag = 0,
+	},
+//	.initial = lcd_oem_1280x800_initial,
+//	.uninitial = lcd_oem_1280x800_uninitial,
+};
+
 lcd_parm_t lcd_oem_parm_1280x800 = {
 	.bits_per_pixel = 24,
 	.capability = LCD_CAP_CLK_HI,
@@ -252,8 +275,8 @@ lcd_parm_t lcd_oem_parm_1280x800 = {
 		.vmode = 0,
 		.flag = 0,
 	},
-	.initial = lcd_oem_1280x800_initial,
-	.uninitial = lcd_oem_1280x800_uninitial,
+//	.initial = lcd_oem_1280x800_initial,
+//	.uninitial = lcd_oem_1280x800_uninitial,
 };
 
 /*----------------------- Function Body --------------------------------------*/
@@ -278,6 +301,7 @@ lcd_parm_t *lcd_get_oem_parm(int resx, int resy)
 		&lcd_oem_parm_1024x768,
 		&lcd_oem_parm_1366x768,
 		&lcd_oem_parm_800x480,
+		&lcd_oem_parm_800x1280,
 		&lcd_oem_parm_1280x800,
 		0
 	};

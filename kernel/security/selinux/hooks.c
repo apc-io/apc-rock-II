@@ -5717,8 +5717,33 @@ static struct security_operations selinux_ops = {
 #endif
 };
 
+extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
+
 static __init int selinux_init(void)
 {
+    // 2013-12-10 YJChen: Add Begin
+    char selinux_env_name[] = "wmt.selinux.param";
+    char selinux_env_buf[32] = "0";
+    int varlen = 32;
+    unsigned int nEnable = 0;
+
+    if (wmt_getsyspara(selinux_env_name, selinux_env_buf, &varlen) == 0) {
+        sscanf(selinux_env_buf, "%x", &nEnable);
+        printk("wmt.selinux.param = %x\n", nEnable);
+        if (nEnable != 0x1) {
+            printk("setting disable selinux\n");
+            selinux_enabled = 0;
+            return 0;
+        }
+    }
+    else {
+        // not define wmt.selinux.param, default disable
+        printk("default disable selinux\n");
+        selinux_enabled = 0;
+        return 0;
+    }
+    // 2013-12-10 YJChen: Add End
+
 	if (!security_module_enable(&selinux_ops)) {
 		selinux_enabled = 0;
 		return 0;

@@ -24,9 +24,6 @@
 #ifndef _VT1603_H
 #define _VT1603_H
 
-/* VT1603 register space */
-
-///////////vt1603//////////////////
 #define BIT0	0x00000001
 #define BIT1	0x00000002
 #define BIT2	0x00000004
@@ -37,7 +34,7 @@
 #define BIT7	0x00000080
 #define BIT8	0x00000100
 
-#define VT1603_RESET 0x15
+#define VT1603_REG_RESET 0x15
 
 #define VT1603_R00  0x00
 #define VT1603_R01  0x01
@@ -59,16 +56,11 @@
 #define VT1603_R11  0x11
 #define VT1603_R12  0x12
 #define VT1603_R13  0x13
-#define VT1603_R14  0x14
 #define VT1603_R15  0x15
-#define VT1603_R16  0x16
-#define VT1603_R17  0x17
-#define VT1603_R18  0x18
 #define VT1603_R19  0x19
 #define VT1603_R1b  0x1b
 #define VT1603_R1c  0x1c
 #define VT1603_R1d  0x1d
-#define VT1603_R1e  0x1e
 #define VT1603_R20  0x20
 #define VT1603_R21  0x21
 #define VT1603_R23  0x23
@@ -80,7 +72,6 @@
 #define VT1603_R2b  0x2b
 #define VT1603_R2c  0x2c
 #define VT1603_R2d  0x2d
-#define VT1603_R3f  0x3f
 #define VT1603_R40  0x40
 #define VT1603_R41  0x41
 #define VT1603_R42  0x42
@@ -107,7 +98,6 @@
 #define VT1603_R71  0x71
 #define VT1603_R72  0x72
 #define VT1603_R73  0x73
-#define VT1603_R76  0x76
 #define VT1603_R77  0x77
 #define VT1603_R79  0x79
 #define VT1603_R7a  0x7a
@@ -125,11 +115,5 @@
 #define VT1603_R95  0x95
 #define VT1603_R96  0x96
 #define VT1603_R97  0x97
-#define VT1603_RC2  0xc2
-#define VT1603_RE8  0xE8
-#define VT1603_NULL 0xEF
-
-
-extern int vt1603_hwdep_ioctl(u8 rw_flag, u16 offset, u16 value);
 
 #endif

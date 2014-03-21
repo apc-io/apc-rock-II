@@ -310,6 +310,7 @@ static ssize_t gpio_value_store(struct device *dev,
 		if (status == 0) {
 			if (test_bit(FLAG_ACTIVE_LOW, &desc->flags))
 				value = !value;
+			printk("[GPIO] %d, %ld\n", gpio, value);
 			gpio_set_value_cansleep(gpio, value != 0);
 			status = size;
 		}
@@ -1499,6 +1500,44 @@ fail:
 	return status;
 }
 EXPORT_SYMBOL_GPL(gpio_direction_output);
+
+int gpio_re_enabled(unsigned gpio)
+{
+	unsigned long		flags;
+	struct gpio_chip	*chip;
+	struct gpio_desc	*desc = &gpio_desc[gpio];
+	int			status = -EINVAL;
+
+	spin_lock_irqsave(&gpio_lock, flags);
+	if (!gpio_is_valid(gpio))
+		goto fail;
+	chip = desc->chip;
+	if (!chip || !chip->set || !chip->direction_output)
+		goto fail;
+	gpio -= chip->base;
+	if (gpio >= chip->ngpio)
+		goto fail;
+	status = gpio_ensure_requested(desc, gpio);
+	if (status < 0)
+		goto fail;
+
+	spin_unlock_irqrestore(&gpio_lock, flags);
+
+	status = chip->request(chip, gpio);
+	if (status < 0) {
+		pr_debug("GPIO-%d: chip request fail, %d\n",
+			 chip->base + gpio, status);
+	}
+	return status;
+
+fail:
+	spin_unlock_irqrestore(&gpio_lock, flags);
+	if (status)
+		pr_debug("%s: gpio-%d status %d\n",
+			 __func__, gpio, status);
+	return status;
+}
+EXPORT_SYMBOL_GPL(gpio_re_enabled);
 
 /**
  * gpio_set_debounce - sets @debounce time for a @gpio

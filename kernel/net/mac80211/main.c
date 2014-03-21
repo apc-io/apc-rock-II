@@ -35,6 +35,8 @@
 
 static struct lock_class_key ieee80211_rx_skb_queue_class;
 
+extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
+
 void ieee80211_configure_filter(struct ieee80211_local *local)
 {
 	u64 mc;
@@ -685,6 +687,10 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 		WLAN_CIPHER_SUITE_AES_CMAC
 	};
 
+	int ret;
+	unsigned char buf[80];
+	int varlen = 80;
+
 	if ((hw->wiphy->wowlan.flags || hw->wiphy->wowlan.n_patterns)
 #ifdef CONFIG_PM
 	    && (!local->ops->suspend || !local->ops->resume)
@@ -924,6 +930,22 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 			wiphy_warn(local->hw.wiphy,
 				   "Failed to add default virtual iface\n");
 	}
+
+	ret = wmt_getsyspara("wmt.init.rc", buf, &varlen);
+	if (ret == 0) {
+                printk(KERN_ALERT"wmt.init.rc:%s\n",buf);
+                if(!strcmp(buf,"init.eagle.rc")){
+        		if (local->hw.wiphy->interface_modes &
+                		(BIT(NL80211_IFTYPE_P2P_GO) | BIT(NL80211_IFTYPE_P2P_CLIENT))) {
+                		result = ieee80211_if_add(local, "p2p%d", NULL,
+                                          NL80211_IFTYPE_STATION, NULL);
+				if (result)
+					wiphy_warn(local->hw.wiphy, "Failed to add default virtual iface\n");
+        		}
+                }
+        } else {
+                printk(KERN_ALERT "wmt.init.rc do not exit\n");
+        }
 
 	rtnl_unlock();
 

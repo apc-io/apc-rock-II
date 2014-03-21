@@ -1010,6 +1010,7 @@ extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
 extern char enable_uhci0_wake;
 extern char enable_uhci1_wake;
 extern char enable_ehci_wake ;
+extern int usb_power_insuf_skip;
  
 static int __init usb_init(void)
 {
@@ -1020,6 +1021,11 @@ static int __init usb_init(void)
 	char usb_env_pmc_val[100] = "0";
 	int varpmclen = 100;	
 	unsigned int usb_pmc_param[6];
+
+	char usb_power_skip_name[] = "wmt.usb.power.skip";
+	char usb_power_skip_val[60] = "0";
+	int var_power_skip_len = 60;	
+    
 
 	if(wmt_getsyspara(usb_env_pmc_name, usb_env_pmc_val, &varpmclen) == 0) {						
 			sscanf(usb_env_pmc_val,"%X:%X:%X:%X:%X:%X", &usb_pmc_param[0],&usb_pmc_param[1], 
@@ -1047,7 +1053,13 @@ static int __init usb_init(void)
 				enable_uhci0_wake = 1;
  			}		
 	}		
-	
+
+
+	if(wmt_getsyspara(usb_power_skip_name, usb_power_skip_val, &var_power_skip_len) == 0) {						
+        sscanf(usb_power_skip_val,"%d",&usb_power_insuf_skip);
+        printk("usb_power_insuf_skip %d\n",usb_power_insuf_skip);
+    }
+    
 	if (nousb) {
 		pr_info("%s: USB support disabled\n", usbcore_name);
 		return 0;

@@ -225,7 +225,9 @@ static int set_sample_rate_v1(struct snd_usb_audio *chip, int iface,
 				   data, sizeof(data))) < 0) {
 		snd_printk(KERN_ERR "%d:%d:%d: cannot set freq %d to ep %#x\n",
 			   dev->devnum, iface, fmt->altsetting, rate, ep);
-		return err;
+		//return err;  //just not return, otherwise, logitech camera mic,can't use 2013-10-23
+		//printk("%s snd_usb_ctl_msg set rate err! \n", __FUNCTION__);
+		//return 0;//dbg if application set the rate that usb audio support just return 0! 2013-10-23
 	}
 
 	if ((err = snd_usb_ctl_msg(dev, usb_rcvctrlpipe(dev, 0), UAC_GET_CUR,
@@ -234,10 +236,12 @@ static int set_sample_rate_v1(struct snd_usb_audio *chip, int iface,
 				   data, sizeof(data))) < 0) {
 		snd_printk(KERN_WARNING "%d:%d:%d: cannot get freq at ep %#x\n",
 			   dev->devnum, iface, fmt->altsetting, ep);
+		printk("%s snd_usb_ctl_msg get rate err!\n", __FUNCTION__);	   
 		return 0; /* some devices don't support reading */
 	}
 
 	crate = data[0] | (data[1] << 8) | (data[2] << 16);
+	printk("%s snd_usb_ctl_msg get rate 2 :%d!\n", __FUNCTION__, crate);
 	if (crate != rate) {
 		snd_printd(KERN_WARNING "current rate %d is different from the runtime rate %d\n", crate, rate);
 		// runtime->rate = crate;

@@ -50,6 +50,11 @@ static int  option_probe(struct usb_serial *serial,
 static void option_release(struct usb_serial *serial);
 static int option_send_setup(struct usb_serial_port *port);
 static void option_instat_callback(struct urb *urb);
+/* VIA-Telecom CBP(Non-CDC version) IDs */                                   
+#define VIATELECOM_VENDOR_ID           0x15EB                                
+#define VIATELECOM_PRODUCT_ID          0x0001                                
+#define BORA9380_VENDOR_ID           0x16d8                                
+#define BORA9380_PRODUCT_ID          0x4000                              
 
 /* Vendor and product IDs */
 #define OPTION_VENDOR_ID			0x0AF0
@@ -1271,6 +1276,27 @@ static const struct usb_device_id option_ids[] = {
 	{ USB_DEVICE_AND_INTERFACE_INFO(MEDIATEK_VENDOR_ID, MEDIATEK_PRODUCT_FPDC_1COM, 0x0a, 0x00, 0x00) },
 	{ USB_DEVICE_AND_INTERFACE_INFO(MEDIATEK_VENDOR_ID, MEDIATEK_PRODUCT_FPDC_2COM, 0x0a, 0x00, 0x00) },
 	{ USB_DEVICE(CELLIENT_VENDOR_ID, CELLIENT_PRODUCT_MEN200) },
+	{ USB_DEVICE(VIATELECOM_VENDOR_ID, VIATELECOM_PRODUCT_ID) },/* VIA-Telecom CBP CDC Version*/
+	{ USB_DEVICE_AND_INTERFACE_INFO(HUAWEI_VENDOR_ID, 0x1c05, 0xff, 0xff, 0xff) }, /*huawei E173*/
+	{ USB_DEVICE_AND_INTERFACE_INFO(0x05c6, 0x1000, 0xff, 0xff, 0xff) }, /*´´¾°SCV  SEV759 */
+	{ USB_DEVICE_AND_INTERFACE_INFO(0x05c6, 0x6000, 0xff, 0xff, 0xff) }, /*´´¾°SCV  SEV759 */
+	{ USB_DEVICE_AND_INTERFACE_INFO(0x20a6, 0xf00e, 0xff, 0xff, 0xff) }, /*´´¾°SCV  SEW868 */
+	{ USB_DEVICE_AND_INTERFACE_INFO(0x20a6, 0x1105, 0xff, 0xff, 0xff) }, /*´´¾°SCV  SEW868 */
+	{ USB_DEVICE(0x19f5, 0x9909) }, 	/*UW100 */
+	{ USB_DEVICE(0x19f5, 0x9013) },		/*UW100 */
+	{ USB_DEVICE_AND_INTERFACE_INFO(0x05c6, 0x0015, 0xff, 0xff, 0xff) }, 
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0x1176, 0xff, 0xff, 0xff) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0x1008, 0xff, 0xff, 0xff) },
+	{ USB_DEVICE(BORA9380_VENDOR_ID, BORA9380_PRODUCT_ID) },/* ²¨ÀÖ9380*/
+	{ USB_DEVICE_AND_INTERFACE_INFO(HUAWEI_VENDOR_ID, 0x14a8, 0xff, 0xff, 0xff) },
+
+	{ USB_DEVICE(0x1c9e, 0x9605) },		/*a dongle without brand */
+	{ USB_DEVICE(0x231e, 0x0036) },		/*CYIT TD/GSM modem*/
+	{ USB_DEVICE(ZTE_VENDOR_ID, 0x1176) },		/*vodafone k3770-z*/
+	{ USB_DEVICE(HUAWEI_VENDOR_ID, 0x1506) },		/*hw e1731*/
+	{ USB_DEVICE(HUAWEI_VENDOR_ID, 0x1573) },		/*hw mu609*/
+	{ USB_DEVICE(0x1782, 0x0002) },		/*spectrum G3 3g modem*/
+
 	{ } /* Terminating entry */
 };
 MODULE_DEVICE_TABLE(usb, option_ids);
@@ -1351,6 +1377,21 @@ static bool is_blacklisted(const u8 ifnum, enum option_blacklist_reason reason,
 	}
 	return false;
 }
+static int viatelecom_send_setup(struct usb_serial_port *port)
+{
+	struct usb_serial *serial = port->serial;
+	struct usb_wwan_port_private *portdata = usb_get_serial_port_data(port);
+	int ifNum = serial->interface->cur_altsetting->desc.bInterfaceNumber;
+
+    /* VIA-Telecom CBP DTR format */
+    return usb_control_msg(serial->dev,
+            usb_sndctrlpipe(serial->dev, 0),
+            0x01, 0x40, portdata->dtr_state? 1: 0, ifNum,
+            NULL, 0, USB_CTRL_SET_TIMEOUT);
+
+	
+}
+
 
 static int option_probe(struct usb_serial *serial,
 			const struct usb_device_id *id)
@@ -1385,10 +1426,22 @@ static int option_probe(struct usb_serial *serial,
 		serial->interface->cur_altsetting->desc.bInterfaceClass != USB_CLASS_CDC_DATA)
 		return -ENODEV;
 
+
+    if(serial->dev->descriptor.idVendor == HUAWEI_VENDOR_ID){
+        if(0!=(serial->dev->config->desc.bmAttributes&0x20)){
+            usb_enable_autosuspend(serial->dev);
+        }
+    }
+
 	data = serial->private = kzalloc(sizeof(struct usb_wwan_intf_private), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
-	data->send_setup = option_send_setup;
+
+	if ((serial->dev->descriptor.idVendor == BORA9380_VENDOR_ID &&
+        serial->dev->descriptor.idProduct == BORA9380_PRODUCT_ID)) {
+        data->send_setup = viatelecom_send_setup;
+    } else
+		data->send_setup = option_send_setup;
 	spin_lock_init(&data->susp_lock);
 	data->private = (void *)id->driver_info;
 	return 0;

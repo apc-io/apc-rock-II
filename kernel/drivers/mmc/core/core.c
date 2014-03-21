@@ -2782,6 +2782,8 @@ int mmc_resume_host(struct mmc_host *host)
 				pm_runtime_enable(&host->card->dev);
 			}
 		}
+		//kevin add for suspend&resume
+		mmc_set_ios(host);
 
 		BUG_ON(!host->bus_ops->resume);
 		err = host->bus_ops->resume(host);

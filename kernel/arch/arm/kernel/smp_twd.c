@@ -26,6 +26,7 @@
 #include <asm/smp_twd.h>
 #include <asm/localtimer.h>
 #include <asm/hardware/gic.h>
+#include <mach/hardware.h>
 
 /* set up by the platform code */
 static void __iomem *twd_base;
@@ -104,9 +105,8 @@ static void twd_timer_stop(struct clock_event_device *clk)
  */
 static void twd_update_frequency(void *data)
 {
-	struct cpufreq_freqs *freqs = data;
+	twd_timer_rate = (auto_pll_divisor(DEV_ARM, GET_CPUTIMER, 0, 0) / 2);
 
-	twd_timer_rate = freqs-> new * 1000 / 2; // freqs->new unit is Khz
 	clockevents_update_freq(*__this_cpu_ptr(twd_evt), twd_timer_rate);
 }
 

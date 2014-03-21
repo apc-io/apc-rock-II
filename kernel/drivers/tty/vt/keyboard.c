@@ -1032,6 +1032,8 @@ static inline unsigned char getleds(void)
 
 static int kbd_update_leds_helper(struct input_handle *handle, void *data)
 {
+// yumzhu mask for EV_LED leading to suspend failed on platform 8880
+#if 0	
 	unsigned char leds = *(unsigned char *)data;
 
 	if (test_bit(EV_LED, handle->dev->evbit)) {
@@ -1040,7 +1042,7 @@ static int kbd_update_leds_helper(struct input_handle *handle, void *data)
 		input_inject_event(handle, EV_LED, LED_CAPSL,   !!(leds & 0x04));
 		input_inject_event(handle, EV_SYN, SYN_REPORT, 0);
 	}
-
+#endif
 	return 0;
 }
 

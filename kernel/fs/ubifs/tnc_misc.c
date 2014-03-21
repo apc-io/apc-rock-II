@@ -267,7 +267,7 @@ read_again:
 	overlap = (lnum == wbuf->lnum && (offs >= wbuf->offs) && (c->min_io_size > offs - wbuf->offs));
 	
 	if(overlap) {
-		if(offs + len < record) {
+		if(offs + len <= record) {
 		memcpy(buf, wbuf->buf + offs - wbuf->offs, len);
 		goto check;
 		}
@@ -302,6 +302,7 @@ check:
 out_dump:
 	ubifs_err("bad node at LEB %d:%d, LEB mapping status %d", lnum, offs,
 	ubi_is_mapped(c->ubi, lnum));
+	ubifs_err("recordi is %d, len is %d", record, len);
 	dbg_dump_node(c, buf);
 	dbg_dump_stack();
 	return -EINVAL;
@@ -326,7 +327,7 @@ static int read_znode(struct ubifs_info *c, int lnum, int offs, int len,
 	int i, err, type, cmp;
 	struct ubifs_idx_node *idx;
 	struct ubifs_wbuf *wbuf;
-	//	struct ubifs_ch *ch;
+	//struct ubifs_ch *ch;
 	//idx = kmalloc(c->max_idx_node_sz, GFP_NOFS);
 	idx = (struct ubifs_idx_node *)c->buf;
 	if (!idx)
@@ -340,7 +341,7 @@ static int read_znode(struct ubifs_info *c, int lnum, int offs, int len,
 	err = ubifs_read_buf_node(c, idx, UBIFS_IDX_NODE, len, lnum, offs, wbuf);
 	
 	if(err < 0) {
-		kfree(idx);
+	//	kfree(idx);
 		return err;
 	}
 	znode->child_cnt = le16_to_cpu(idx->child_cnt);

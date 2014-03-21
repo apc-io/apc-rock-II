@@ -33,22 +33,44 @@
 ------------------------------------------------------------------------------*/
 #define MB_IOC_MAGIC			'M'
 
-#define MBIO_MALLOC				_IOWR(MB_IOC_MAGIC, 0, unsigned long) // O: physical address	I: size
-#define MBIO_FREE				_IOWR(MB_IOC_MAGIC, 1, unsigned long) // O: ummap size		I: user address if map, physical address if not map
-#define MBIO_UNMAP				_IOWR(MB_IOC_MAGIC, 2, unsigned long) // O: ummap size		I: user address
-#define MBIO_MBSIZE				_IOWR(MB_IOC_MAGIC, 3, unsigned long) // O: mb size			I: phys address
-#define MBIO_MAX_AVAILABLE_SIZE	_IOR (MB_IOC_MAGIC, 4, unsigned long) // O: max free mba size
+/* O: physical address I: size */
+#define MBIO_MALLOC _IOWR(MB_IOC_MAGIC, 0, unsigned long)
+/* O: ummap size I: user address if map, physical address if not map */
+#define MBIO_FREE _IOWR(MB_IOC_MAGIC, 1, unsigned long)
+/* O: ummap size I: user address */
+#define MBIO_UNMAP _IOWR(MB_IOC_MAGIC, 2, unsigned long)
+/* O: mb size I: phys address */
+#define MBIO_MBSIZE _IOWR(MB_IOC_MAGIC, 3, unsigned long)
+/* O: max free mba size */
+#define MBIO_MAX_AVAILABLE_SIZE _IOR(MB_IOC_MAGIC, 4, unsigned long)
 /* advance use only */
-#define MBIO_GET				_IOW (MB_IOC_MAGIC, 5, unsigned long) // I: user address
-#define MBIO_PUT				_IOW (MB_IOC_MAGIC, 6, unsigned long) // I: user address
-#define MBIO_USER_TO_VIRT		_IOWR(MB_IOC_MAGIC, 7, unsigned long) // O: virt address		I: user address
-#define MBIO_USER_TO_PHYS		_IOWR(MB_IOC_MAGIC, 8, unsigned long) // O: phys address		I: user address
-#define MBIO_PREFETCH			_IOW (MB_IOC_MAGIC, 9, unsigned long) // I: size
-#define MBIO_STATIC_SIZE		_IOR (MB_IOC_MAGIC,10, unsigned long) // O: static mba size
-#define MBIO_MB_USER_COUNT		_IOWR(MB_IOC_MAGIC,11, unsigned long) // O: use counter		I: physical address
+/* I: user address */
+#define MBIO_GET _IOW(MB_IOC_MAGIC, 5, unsigned long)
+/* I: user address */
+#define MBIO_PUT _IOW(MB_IOC_MAGIC, 6, unsigned long)
+/* O: virt address I: user address */
+#define MBIO_USER_TO_VIRT _IOWR(MB_IOC_MAGIC, 7, unsigned long)
+/* O: phys address I: user address */
+#define MBIO_USER_TO_PHYS _IOWR(MB_IOC_MAGIC, 8, unsigned long)
+/* I: size */
+#define MBIO_PREFETCH _IOW(MB_IOC_MAGIC, 9, unsigned long)
+/* O: static mba size */
+#define MBIO_STATIC_SIZE _IOR(MB_IOC_MAGIC, 10, unsigned long)
+/* O: use counter I: physical address */
+#define MBIO_MB_USER_COUNT _IOWR(MB_IOC_MAGIC, 11, unsigned long)
 #define MBIO_FORCE_RESET		_IO  (MB_IOC_MAGIC,12)
-#define MBIO_GET_BY_PHYS		_IOW (MB_IOC_MAGIC,13, unsigned long) // I: phys address
-#define MBIO_PUT_BY_PHYS		_IOW (MB_IOC_MAGIC,14, unsigned long) // I: phys address
+/* I: phys address */
+#define MBIO_GET_BY_PHYS _IOW(MB_IOC_MAGIC, 13, unsigned long)
+/* I: phys address */
+#define MBIO_PUT_BY_PHYS _IOW(MB_IOC_MAGIC, 14, unsigned long)
+/* I: user address */
+#define MBIO_SYNC_CACHE _IOW(MB_IOC_MAGIC, 15, unsigned long)
+/* O: mb driver version */
+#define MBIO_GET_VERSION _IOR(MB_IOC_MAGIC, 16, unsigned long)
+/* O: property of MB */
+#define MBIO_SET_CACHABLE _IOW(MB_IOC_MAGIC, 17, unsigned long)
+/* O: property of MB */
+#define MBIO_CLR_CACHABLE _IOW(MB_IOC_MAGIC, 18, unsigned long)
 
 #endif /* ifndef COM_MB_H */
 

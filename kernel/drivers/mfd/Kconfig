@@ -847,6 +847,24 @@ config MFD_TPS65090
 	  additional drivers must be enabled in order to use the
 	  functionality of the device.
 
+config VT1603_CORE
+	bool "WMT VT1603 Support"
+	select MFD_CORE
+choice
+    prompt "VT1603 control bus select"
+    default VT1603_IOCTRL_SPI
+    depends on VT1603_CORE 
+config VT1603_IOCTRL_SPI
+        bool "SPI"
+        ---help---
+          Say Y here if you want to use SPI bus.
+config VT1603_IOCTRL_I2C
+        bool "I2C"
+        ---help---
+          Say Y here if you want to use I2C bus.
+endchoice
+
+
 config MFD_AAT2870_CORE
 	bool "Support for the AnalogicTech AAT2870"
 	select MFD_CORE

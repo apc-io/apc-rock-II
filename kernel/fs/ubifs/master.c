@@ -33,6 +33,7 @@
  * corrupted and requires recovery, and a negative error code in case of
  * failure.
  */
+#if 0
 static int scan_for_master(struct ubifs_info *c)
 {
 	struct ubifs_scan_leb *sleb;
@@ -87,7 +88,67 @@ out_dump:
 	ubifs_scan_destroy(sleb);
 	return -EINVAL;
 }
+#endif
+static int search_blk(struct ubifs_info *c, int lnum) 
+{
+	struct ubifs_ch *ch;
+	int tmp_low, tmp_high, tmp_mid;
+	int tmp_offs;
+	uint32_t magic;
 
+	tmp_low = 0;
+	tmp_high = c->leb_size / c->min_io_size - 1;
+	
+	while(tmp_low <= tmp_high)
+        {
+        tmp_mid = (tmp_low + tmp_high) / 2;
+        tmp_offs = tmp_mid * c->min_io_size;
+        ubifs_leb_read(c, lnum, c->sbuf, tmp_offs, c->min_io_size, 0);
+        ch = c->sbuf;
+        magic = le32_to_cpu(ch->magic);
+                if (magic == 0xFFFFFFFF) {
+                        tmp_high = tmp_mid - 1;
+                } else {
+                        tmp_low = tmp_mid + 1;
+                }
+        }
+        tmp_mid = (tmp_low + tmp_high) / 2;
+	return tmp_mid;
+}
+/*			add by Johnny Liu 2013.09.24*/
+static int scan_for_master(struct ubifs_info *c)
+{
+	struct ubifs_ch *ch;
+	int lnum, first_cnt, second_cnt;
+	lnum = UBIFS_MST_LNUM;
+	first_cnt = search_blk(c, lnum);
+	ubifs_leb_read(c, lnum, c->sbuf, first_cnt * c->min_io_size, c->min_io_size, 0);
+	ch = c->sbuf;
+	if (ch->node_type != UBIFS_MST_NODE)
+		goto out_dump;
+	memcpy(c->mst_node, c->sbuf, ch->len);
+	
+	lnum += 1;
+
+	second_cnt = search_blk(c, lnum);
+	if(first_cnt != second_cnt)
+		goto out;
+	ubifs_leb_read(c, lnum, c->sbuf, second_cnt * c->min_io_size, c->min_io_size, 0);
+	if (memcmp((void *)c->mst_node + UBIFS_CH_SZ, 
+		(void *)c->sbuf + UBIFS_CH_SZ, 
+		UBIFS_MST_NODE_SZ - UBIFS_CH_SZ))
+		goto out;
+
+	c->mst_offs = first_cnt * c->min_io_size;
+	return 0;
+out:
+	ubifs_err("unexpected master node in master LEB");
+	return -EUCLEAN;
+
+out_dump:
+	ubifs_err("unexpected node type master LEB %d",lnum);
+	return -EINVAL;
+}
 /**
  * validate_master - validate master node.
  * @c: UBIFS file-system description object

@@ -149,7 +149,7 @@ struct otp_info {
 struct env_info_user {
     char varname[200];
     char *varpoint;
-    char varval[200];
+    char varval[512];
     int varlen;
 };
 /*

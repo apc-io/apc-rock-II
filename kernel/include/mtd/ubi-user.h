@@ -267,7 +267,8 @@ struct ubi_attach_req {
 	__s32 ubi_num;
 	__s32 mtd_num;
 	__s32 vid_hdr_offset;
-	__s8 padding[12];
+	__s16 max_beb_per1024;
+	__s8 padding[10];
 };
 
 /**

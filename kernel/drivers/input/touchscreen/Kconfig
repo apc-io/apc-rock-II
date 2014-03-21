@@ -851,4 +851,22 @@ config TOUCHSCREEN_TPS6507X
 	  To compile this driver as a module, choose M here: the
 	  module will be called tps6507x_ts.
 
+config TOUCHSCREEN_VT1609
+	tristate "Vt1609 Dual-touch Support,Compatible with Vt1603a Single-touch"
+	default y
+	depends on ARCH_WMT
+	help
+	  Say Y here if you have a vt1603a single or vt1609 dual touchscreen and
+	  want to enable support for the built-in touchscreen.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called vt1609_dual_ts.  
+
+source "drivers/input/touchscreen/gsl1680_ts/Kconfig"
+source "drivers/input/touchscreen/sitronix/Kconfig"
+source "drivers/input/touchscreen/zet6221_ts/Kconfig"
+source "drivers/input/touchscreen/cyp140_ts/Kconfig"
+source "drivers/input/touchscreen/ft5x0x/Kconfig"
+source "drivers/input/touchscreen/aw5306_ts/Kconfig"
+source "drivers/input/touchscreen/gt9xx_ts/Kconfig"
 endif

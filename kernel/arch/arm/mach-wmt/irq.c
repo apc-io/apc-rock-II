@@ -25,7 +25,9 @@ WonderMedia Technologies, Inc.
 #include <linux/of.h>
 #include <asm/hardware/gic.h>
 
+#include <mach/wmt_secure.h>
 
+extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
 /*
  * Follows are handlers for normal irq_chip
  */
@@ -51,6 +53,12 @@ static const struct of_device_id wmt_dt_gic_match[] __initconst = {
 };
 #endif
 
+void wmt_irq_stub()
+{
+       asm volatile ( "cpsie i" );
+	wmt_smc(WMT_SMC_CMD_IRQ_RET, 0);
+}
+
 void __init wmt_init_irq(void)
 {
 	gic_arch_extn.irq_ack = wmt_ack_irq;
@@ -63,4 +71,14 @@ void __init wmt_init_irq(void)
 	else
 		of_irq_init(wmt_dt_gic_match);
 #endif
+	unsigned char buf[40];
+	int varlen=40;
+	unsigned int cpu_trustzone_enabled = 0;
+
+	if (wmt_getsyspara("wmt.secure.param",buf,&varlen) == 0)
+		sscanf(buf,"%d",&cpu_trustzone_enabled);
+	if(cpu_trustzone_enabled != 1)
+		cpu_trustzone_enabled = 0;
+	if(cpu_trustzone_enabled != 0)
+		wmt_smc(WMT_SMC_CMD_IRQOK, (unsigned int)wmt_irq_stub);
 }

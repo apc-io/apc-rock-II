@@ -203,7 +203,7 @@ static int wm8994_suspend(struct device *dev)
 	if (ret < 0) {
 		dev_err(dev, "Failed to read power status: %d\n", ret);
 	} else if (ret & WM8994_VMID_SEL_MASK) {
-		dev_dbg(dev, "CODEC still active, ignoring suspend\n");
+		dev_warn(dev, "CODEC still active, ignoring suspend [%d]\n", __LINE__);
 		return 0;
 	}
 
@@ -213,17 +213,16 @@ static int wm8994_suspend(struct device *dev)
 	} else if (ret & (WM8994_AIF2ADCL_ENA | WM8994_AIF2ADCR_ENA |
 			  WM8994_AIF1ADC2L_ENA | WM8994_AIF1ADC2R_ENA |
 			  WM8994_AIF1ADC1L_ENA | WM8994_AIF1ADC1R_ENA)) {
-		dev_dbg(dev, "CODEC still active, ignoring suspend\n");
+		dev_warn(dev, "CODEC still active, ignoring suspend [%d]\n", __LINE__);
 		return 0;
 	}
 
 	ret = wm8994_reg_read(wm8994, WM8994_POWER_MANAGEMENT_5);
 	if (ret < 0) {
 		dev_err(dev, "Failed to read power status: %d\n", ret);
-	} else if (ret & (WM8994_AIF2DACL_ENA | WM8994_AIF2DACR_ENA |
-			  WM8994_AIF1DAC2L_ENA | WM8994_AIF1DAC2R_ENA |
+	} else if (ret & (WM8994_AIF1DAC2L_ENA | WM8994_AIF1DAC2R_ENA |
 			  WM8994_AIF1DAC1L_ENA | WM8994_AIF1DAC1R_ENA)) {
-		dev_dbg(dev, "CODEC still active, ignoring suspend\n");
+		dev_warn(dev, "CODEC still active, ignoring suspend [%d]\n", __LINE__);
 		return 0;
 	}
 
@@ -234,7 +233,7 @@ static int wm8994_suspend(struct device *dev)
 		if (ret < 0) {
 			dev_err(dev, "Failed to read power status: %d\n", ret);
 		} else if (ret & WM8958_MICD_ENA) {
-			dev_dbg(dev, "CODEC still active, ignoring suspend\n");
+			dev_warn(dev, "CODEC still active, ignoring suspend\n");
 			return 0;
 		}
 		break;
@@ -248,7 +247,7 @@ static int wm8994_suspend(struct device *dev)
 		if (ret < 0) {
 			dev_err(dev, "Failed to read jackdet: %d\n", ret);
 		} else if (ret & WM1811_JACKDET_MODE_MASK) {
-			dev_dbg(dev, "CODEC still active, ignoring suspend\n");
+			dev_warn(dev, "CODEC still active, ignoring suspend\n");
 			return 0;
 		}
 		break;
@@ -262,7 +261,7 @@ static int wm8994_suspend(struct device *dev)
 		if (ret < 0) {
 			dev_err(dev, "Failed to read jackdet: %d\n", ret);
 		} else if (ret & WM1811_JACKDET_MODE_MASK) {
-			dev_dbg(dev, "CODEC still active, ignoring suspend\n");
+			dev_warn(dev, "CODEC still active, ignoring suspend\n");
 			return 0;
 		}
 		break;
@@ -302,6 +301,7 @@ static int wm8994_resume(struct device *dev)
 {
 	struct wm8994 *wm8994 = dev_get_drvdata(dev);
 	int ret;
+	int retry = 0;
 
 	/* We may have lied to the PM core about suspending */
 	if (!wm8994->suspended)
@@ -315,9 +315,22 @@ static int wm8994_resume(struct device *dev)
 	}
 
 	regcache_cache_only(wm8994->regmap, false);
-	ret = regcache_sync(wm8994->regmap);
-	if (ret != 0) {
-		dev_err(dev, "Failed to restore register map: %d\n", ret);
+	//ret = regcache_sync(wm8994->regmap);
+	//if (ret != 0) {
+	//	dev_err(dev, "Failed to restore register map: %d\n", ret);
+	//	goto err_enable;
+	//}
+
+	for (retry = 0; retry < 50; retry++) {
+		ret = regcache_sync(wm8994->regmap);
+		if (ret != 0)
+			dev_err(dev, "Failed to restore register map: %d, retry count: %d\n", ret, retry);
+		else
+			break;
+		msleep(50);
+	}
+	if (retry == 50) {
+		dev_err(dev, "Finally failed to restore register map: %d\n", ret);
 		goto err_enable;
 	}
 
@@ -555,6 +568,9 @@ static __devinit int wm8994_device_init(struct wm8994 *wm8994, int irq)
 
 	dev_info(wm8994->dev, "%s revision %c\n", devname,
 		 'A' + wm8994->revision);
+
+	wm8994_reg_write(wm8994, WM8994_SOFTWARE_RESET,
+			 wm8994_reg_read(wm8994, WM8994_SOFTWARE_RESET));
 
 	switch (wm8994->type) {
 	case WM1811:

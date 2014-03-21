@@ -29,6 +29,8 @@
 #ifndef VPP_H
 #define VPP_H
 
+/* #define CONFIG_VPP_SHENZHEN */ /* for ShenZhen code */
+
 /* VPP feature config */
 /* #define CONFIG_VPP_DEMO */ /* HDMI EDID, CP disable */
 #define CONFIG_VPP_STREAM_CAPTURE /* stream capture current video display */
@@ -38,7 +40,7 @@
 /* #define CONFIG_VPP_DISABLE_PM */	/* disable power management */
 #define CONFIG_VPP_VIRTUAL_DISPLAY	/* virtual fb dev */
 #define CONFIG_VPP_NOTIFY
-/* #define CONFIG_VPP_DYNAMIC_ALLOC */ /* frame buffer dynamic allocate */
+#define CONFIG_VPP_DYNAMIC_ALLOC  /* frame buffer dynamic allocate */
 
 /* VPP constant define */
 #define VPP_MB_ALLOC_NUM 3
@@ -257,6 +259,8 @@ typedef struct {
 	int fb0_bitblit;
 	int fb_manual; /* not check var & internel timing */
 	int fb_recheck; /* recheck for plug but no change res */
+	int govrh_init_yres;
+	int virtual_display_mode;
 
 	/* hdmi */
 	int hdmi_video_mode; /* 0-auto,720,1080 */
@@ -274,6 +278,7 @@ typedef struct {
 	unsigned int hdmi_pixel_clock;
 	int hdmi_certify_flag;
 	int hdmi_sp_mode;
+	int hdmi_disable;
 
 	/* alloc frame buffer */
 	unsigned int mb[VPP_MB_ALLOC_NUM];
@@ -549,7 +554,7 @@ const struct fb_videomode vpp_videomode[] = {
 	  FB_VMODE_INTERLACED, 0},
 	/* 1920x1200@60+R DMT/CVT */
 	{ NULL, 60, 1920, 1200, KHZ2PICOS(154000), 80, 48, 26, 3, 32, 6,
-	  FB_SYNC_VERT_HIGH_ACT, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA},
+	  FB_SYNC_HOR_HIGH_ACT, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA},
 	/* 1920x1200@60 DMT/CVT */
 	{ NULL, 60, 1920, 1200, KHZ2PICOS(193250), 336, 136, 36, 3, 200, 6,
 	  FB_SYNC_VERT_HIGH_ACT, FB_VMODE_NONINTERLACED, FB_MODE_IS_VESA},

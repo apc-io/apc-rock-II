@@ -364,12 +364,14 @@ static void __init gic_dist_init(struct gic_chip_data *gic)
 	for (i = 32; i < gic_irqs; i += 16)
 		writel_relaxed(0, base + GIC_DIST_CONFIG + i * 4 / 16);
 
+/* This code won't effect the Secure OS interrupt*/
+/*#ifndef CONFIG_OTZONE_AMP_SUPPORT */
 	/*
 	 * Set all global interrupts to this CPU only.
 	 */
 	for (i = 32; i < gic_irqs; i += 4)
 		writel_relaxed(cpumask, base + GIC_DIST_TARGET + i * 4 / 4);
-
+/*#endif */
 	/*
 	 * Set priority on all global interrupts.
 	 */

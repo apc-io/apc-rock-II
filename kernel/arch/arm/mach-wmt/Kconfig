@@ -37,6 +37,18 @@ config WMT_FIXUP_ATAG
 	  Say Y here if you want to fixup the WonderMedia Technology kernel boot parameters.
 	  It is a temp solution if ATAG passing have problem or you don't 
 	  know how exactly setup kernel parameters.
+
+config OTZONE_ASYNC_NOTIFY_SUPPORT
+	bool "TrustZone asynchronous notify support"
+	depends on WMT_EVB
+	---help---
+	Say Y here if you want to use TrustZone asynchronous notify support.
+
+config OTZONE_AMP_SUPPORT
+	bool "TrustZone AMP support"
+	depends on WMT_EVB
+	---help---
+	Say Y here if you want to use TrustZone AMP support.	
 	  
 endmenu
 

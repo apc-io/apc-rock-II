@@ -757,6 +757,11 @@ int ubifs_tnc_start_commit(struct ubifs_info *c, struct ubifs_zbranch *zroot)
 	if (cnt != 0) {
 		int no_space = 0;
 
+		/* disable read buffer if something is written */
+		struct ubifs_wbuf *wbuf;
+		wbuf = &c->idx_buf;
+		wbuf->lnum = -1;
+
 		err = alloc_idx_lebs(c, cnt);
 		if (err == -ENOSPC)
 			no_space = 1;

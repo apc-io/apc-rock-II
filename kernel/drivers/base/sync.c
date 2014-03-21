@@ -31,6 +31,19 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/sync.h>
 
+/* Remove fence from sync_fence_list before release it. -- WonderMedia */
+#define FIX_SYNC_FENCE_LIST
+
+/* Limit number of pts per fence for speed. -- WonderMedia */
+#define SYNC_PTS_MAX 256
+
+#ifdef SYNC_PTS_MAX
+#include <linux/moduleparam.h>
+int sync_pts_max = SYNC_PTS_MAX;
+module_param(sync_pts_max, int, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(sync_pts_max, "Max pts per sync fence");
+#endif
+
 static void sync_fence_signal_pt(struct sync_pt *pt);
 static int _sync_pt_has_signaled(struct sync_pt *pt);
 static void sync_fence_free(struct kref *kref);
@@ -313,6 +326,9 @@ EXPORT_SYMBOL(sync_fence_create);
 static int sync_fence_copy_pts(struct sync_fence *dst, struct sync_fence *src)
 {
 	struct list_head *pos;
+#ifdef SYNC_PTS_MAX
+	int num_pts = 0;
+#endif
 
 	list_for_each(pos, &src->pt_list_head) {
 		struct sync_pt *orig_pt =
@@ -324,7 +340,16 @@ static int sync_fence_copy_pts(struct sync_fence *dst, struct sync_fence *src)
 
 		new_pt->fence = dst;
 		list_add(&new_pt->pt_list, &dst->pt_list_head);
+#ifdef SYNC_PTS_MAX
+		num_pts++;
+#endif
 	}
+#ifdef SYNC_PTS_MAX
+	if (sync_pts_max && num_pts >= sync_pts_max) {
+		printk(KERN_ERR "too many pts per sync fence! %d\n", num_pts);
+		return -ENOMEM;
+	}
+#endif
 
 	return 0;
 }
@@ -452,6 +477,9 @@ struct sync_fence *sync_fence_merge(const char *name,
 	struct sync_fence *fence;
 	struct list_head *pos;
 	int err;
+#ifdef FIX_SYNC_FENCE_LIST
+	unsigned long flags;
+#endif
 
 	fence = sync_fence_alloc(name);
 	if (fence == NULL)
@@ -481,6 +509,11 @@ struct sync_fence *sync_fence_merge(const char *name,
 
 	return fence;
 err:
+#ifdef FIX_SYNC_FENCE_LIST
+	spin_lock_irqsave(&sync_fence_list_lock, flags);
+	list_del(&fence->sync_fence_list);
+	spin_unlock_irqrestore(&sync_fence_list_lock, flags);
+#endif
 	sync_fence_free_pts(fence);
 	kfree(fence);
 	return NULL;

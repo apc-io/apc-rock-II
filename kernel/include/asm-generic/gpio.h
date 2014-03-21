@@ -152,6 +152,7 @@ extern struct gpio_chip *gpiochip_find(const void *data,
  */
 extern int gpio_request(unsigned gpio, const char *label);
 extern void gpio_free(unsigned gpio);
+extern int gpio_re_enabled(unsigned gpio);
 
 extern int gpio_direction_input(unsigned gpio);
 extern int gpio_direction_output(unsigned gpio, int value);

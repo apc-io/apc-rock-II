@@ -36,10 +36,14 @@
 #include <linux/device.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
+#include <linux/usb/composite.h>
 #include <linux/usb/otg.h>
 #include <linux/dma-mapping.h>
 #include <linux/platform_device.h>
 #include <linux/string.h>
+#include <linux/suspend.h>
+
+
 
 #include <asm/byteorder.h>
 #include <asm/io.h>
@@ -97,6 +101,8 @@ MODULE_PARM_DESC(use_dma, "enable/disable DMA");
 
 static const char driver_name[] = "wmotgdev";/*"wmt_udc";*/
 static const char driver_desc[] = DRIVER_DESC;
+
+static DEFINE_SEMAPHORE(wmt_udc_sem);
 
 static struct vt8500_udc *udc;
 static struct device *pDMADescLI, *pDMADescSI;
@@ -186,7 +192,7 @@ static int run_online(void)
 	return 0;	
 }
 #endif
-
+void wmt_cleanup_done_thread(int number);
 static void run_offline (struct work_struct *work)
 {
 	if ((udc->driver) && b_pullup){
@@ -765,6 +771,7 @@ done(struct vt8500_ep *ep, struct vt8500_req *req, int status)
 	/* don't modify queue heads during completion callback*/
 	ep->stopped = 1;
 
+#if 0
 	if ((ep->bEndpointAddress & 0x7F) == 0){
 		spin_unlock_irqrestore(&ep->udc->lock, irq_flags);
 	/*callback to file-backed usb storage gadget(usb_storage.c)*/
@@ -791,6 +798,11 @@ done(struct vt8500_ep *ep, struct vt8500_req *req, int status)
 #endif		
 	}
 	//VDBG("done - after  req->req.complete()\n");
+#else 
+	spin_unlock_irqrestore(&ep->udc->lock, irq_flags);
+	req->req.complete(&ep->ep, &req->req);
+	spin_lock_irqsave(&ep->udc->lock, irq_flags);	
+#endif
 
 	if ((ep->bEndpointAddress & 0x7F) == 0)/*Control*/
 		if (req->req.actual != 0)
@@ -2673,6 +2685,7 @@ static int wmt_pullup(struct usb_gadget *gadget, int is_on)
     DBG("wmt_pullup()\n");
 
 	udc = container_of(gadget, struct vt8500_udc, gadget);
+	down(&wmt_udc_sem);
 	spin_lock_irqsave(&udc->lock, irq_flags);
 	udc->softconnect = (is_on != 0);
 //	if (can_pullup(udc))
@@ -2684,8 +2697,19 @@ static int wmt_pullup(struct usb_gadget *gadget, int is_on)
 		//run_script(action_off_line);		
 	}
 	spin_unlock_irqrestore(&udc->lock, irq_flags);
-
+	up(&wmt_udc_sem);
+	
 	return 0;
+}
+
+void get_udc_sem (void)
+{
+	down(&wmt_udc_sem);
+}
+
+void release_udc_sem (void)
+{
+	up(&wmt_udc_sem);
 }
 
 static int wmt_udc_start(struct usb_gadget_driver *driver,
@@ -4107,8 +4131,11 @@ wmt_udc_setup(struct platform_device *odev, struct usb_phy *xceiv)
 
 	memset(udc, 0, sizeof *udc);
 	spin_lock_init(&udc->lock);
+
 	spin_lock_init(&gri_lock);
 
+	sema_init(&wmt_udc_sem, 1);
+	
 	udc->gadget.ops = &wmt_gadget_ops;
 	udc->gadget.ep0 = &udc->ep[0].ep;
 	INIT_LIST_HEAD(&udc->gadget.ep_list);
@@ -4473,19 +4500,52 @@ static int __exit wmt_udc_remove(struct platform_device *pdev)
 
 /* suspend/resume/wakeup from sysfs (echo > power/state) */
 
+static int
+wmt_udc_pm_notify(struct notifier_block *nb, unsigned long event, void *dummy)
+{
+
+
+	if (event == PM_SUSPEND_PREPARE) {
+		    if (udc->driver){
+				run_script(action_off_line); 
+		    }
+		    gadget_connect=0; 
+		    run_script(action_mount);
+		    down(&wmt_udc_sem);
+		    pullup_disable(udc);
+		    up(&wmt_udc_sem);
+	}
+	else if (event == PM_POST_SUSPEND) {
+		
+		down(&wmt_udc_sem);
+		pullup_enable(udc);
+		up(&wmt_udc_sem);
+		
+		wmt_wakeup(&udc->gadget);
+	}
+
+	return NOTIFY_OK;
+}
+
+
+static struct notifier_block wmt_udc_pm_notifier = {
+	.notifier_call = wmt_udc_pm_notify,
+};
+
+
+
+
 static int wmt_udc_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	DBG("wmt_udc_suspend()\n");
 	printk(KERN_INFO "wmt_udc_suspend\n"); //gri  
-
+#if 0
     if (udc->driver){
-//    		ppudc = udc;
 				run_script(action_off_line); 
-//        udc->driver->disconnect(&udc->gadget);                    
     }
     gadget_connect=0;                               
     run_script(action_mount);
-
+#endif
 	pDevReg->CommandStatus &= 0x1F;
 
 	pUSBMiscControlRegister5 = (unsigned char *)(USB_UDC_REG_BASE + 0x1A0);
@@ -4494,8 +4554,11 @@ static int wmt_udc_suspend(struct platform_device *pdev, pm_message_t state)
 	wmb();
 
 	TestMode = 0;
-//	pDevReg->FunctionPatchEn &= ~0x20;
+#if 0
+	down(&wmt_udc_sem);
 	pullup_disable(udc);
+	up(&wmt_udc_sem);
+#endif	
 
 /*	if ((state == 3) && (level == 3))*/
 /*		*(volatile unsigned int *)(PM_CTRL_BASE_ADDR + 0x254) &= ~0x00000080;*/   /*DPM needed*/
@@ -4507,12 +4570,19 @@ static int wmt_udc_suspend(struct platform_device *pdev, pm_message_t state)
 
 static int wmt_udc_resume(struct platform_device *pdev)
 {
+#if 0
 	DBG("wmt_udc_resume()\n");
 	printk(KERN_INFO "wmt_udc_resume\n"); //gri  
-	reset_udc();
+	down(&wmt_udc_sem);
+	reset_udc();	
 	pullup_enable(udc);
+	up(&wmt_udc_sem);
 
 	return wmt_wakeup(&udc->gadget);
+#endif 	
+	reset_udc();
+	return 0;
+
 } /*wmt_udc_resume()*/
 
 /*-------------------------------------------------------------------------*/
@@ -4544,6 +4614,39 @@ static struct platform_device wmt_udc_device = {
 	.num_resources  = ARRAY_SIZE(wmt_udc_resources),
 	.resource       = wmt_udc_resources,
 };
+
+void wmt_cleanup_done_thread(int number)
+{
+	unsigned long flags;
+	struct usb_composite_dev *cdev = get_gadget_data(&(udc->gadget));
+	if(number == 1)
+	{
+		if(in_interrupt())
+			return;
+		if(spin_is_locked(&cdev->lock)){
+			//local_irq_save(flags);
+			spin_unlock(&cdev->lock);
+			//local_irq_enable();
+			//schedule_work(&done_thread);
+			flush_work_sync(&done_thread);
+			//local_irq_restore(flags);
+			spin_lock(&cdev->lock);
+		}else{
+			flush_work_sync(&done_thread);				
+		}
+		//wmt_ep_disable(&udc->ep[0]);
+		spin_lock_irqsave(&udc->lock, flags);
+		nuke(&udc->ep[0],ESHUTDOWN);
+		spin_unlock_irqrestore(&udc->lock, flags);
+	}else if(number == 2)
+	{
+	}else{
+		//flush_work_sync(&mount_thread);
+		printk("erro parameter:%s\n",__func__);
+	}
+}
+EXPORT_SYMBOL(wmt_cleanup_done_thread);
+
 static int __init udc_init(void)
 {
 	INFO("%s, version: " DRIVER_VERSION
@@ -4560,6 +4663,9 @@ INIT_WORK(&offline_thread, run_offline);
 INIT_WORK(&done_thread, run_done);
 
 platform_device_register(&wmt_udc_device);
+
+	register_pm_notifier(&wmt_udc_pm_notifier);
+
 	return platform_driver_register(&udc_driver);
 } /*udc_init()*/
 

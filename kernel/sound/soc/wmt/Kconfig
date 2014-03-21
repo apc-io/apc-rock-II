@@ -15,6 +15,13 @@ config SND_WMT_SOC_I2S
         ---help---
           Say Y or M if you want to add support for codecs attached to
 	  		the WMT I2S interface.
+	  		
+config SND_WMT_SOC_PDM
+        bool "SoC PDM Audio Interface support for WMT"
+        depends on SND_WMT_SOC
+        ---help---
+          Say Y or M if you want to add support for codecs attached to
+	  		the WMT PDM interface.
 
 config I2S_HW_DAC
         bool "HW_DAC"
@@ -37,9 +44,22 @@ config I2S_CODEC_WM8900
         ---help---
           Say Y here if you want to use WM8900 as the I2S Codec.
           
+config I2S_CODEC_WM8994
+        bool "WM8994"
+        depends on SND_WMT_SOC_I2S
+        select SND_SOC_WM8994
+        ---help---
+          Say Y here if you want to use WM8994 as the I2S Codec.
+          
 config I2S_CODEC_VT1603
         bool "VT1603"
         depends on SND_WMT_SOC_I2S
         select SND_SOC_VT1603
         ---help---
           Say Y here if you want to use VT1603 as the I2S Codec.
+
+config ECHO_CANCELLATION_FM34
+        tristate "FM34"
+        select SND_SOC_WMT_FM34
+        ---help---
+          Say Y here if you want to use fm34 to echo cancallation. 

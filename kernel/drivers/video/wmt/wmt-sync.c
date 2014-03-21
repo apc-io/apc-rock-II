@@ -78,8 +78,12 @@ static int wmt_sync_open(
 	DBG_MSG("\n");
 
 	down(&wmt_sync_sem);
+	if (g_vpp.dual_display) {
 	type = (vout_info[0].govr_mod == VPP_MOD_GOVRH) ?
 			VPP_INT_GOVRH_VBIS : VPP_INT_GOVRH2_VBIS;
+	} else {
+		type = VPP_INT_GOVRH2_VBIS; /* HDMI should slow down */
+	}
 	vpp_irqproc_work(type, wmt_sync_set_vsync, 0, 0, 0);
 	up(&wmt_sync_sem);
 	return ret;
@@ -150,12 +154,15 @@ static ssize_t wmt_sync_read(
 	ssize_t retval = 0;
 
 	down(&wmt_sync_sem);
-	if (filp->f_flags & O_NONBLOCK && !wmt_vsync_flag)
-		return -EAGAIN;
+	if (filp->f_flags & O_NONBLOCK && !wmt_vsync_flag) {
+		retval = -EAGAIN;
+		goto read_end;
+	}
 	data = xchg(&wmt_vsync_flag, 0);
 	retval = wait_event_interruptible(wmt_sync_wait, data);
 	if (retval == 0)
 		retval = put_user(data, (unsigned int __user *)buf);
+read_end:	
 	up(&wmt_sync_sem);
 	return retval;
 } /* wmt_sync_read */

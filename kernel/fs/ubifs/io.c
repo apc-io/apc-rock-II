@@ -123,7 +123,7 @@ int ubifs_leb_write(struct ubifs_info *c, int lnum, const void *buf, int offs,
 	if (c->ro_error)
 		return -EROFS;
 	if (!dbg_is_tst_rcvry(c))
-		err = ubi_leb_write(c->ubi, lnum, buf, offs, len, dtype);
+		err = ubi_leb_write(c->ubi, lnum, buf, offs, len);
 	else
 		err = dbg_leb_write(c, lnum, buf, offs, len, dtype);
 	if (err) {
@@ -144,7 +144,7 @@ int ubifs_leb_change(struct ubifs_info *c, int lnum, const void *buf, int len,
 	if (c->ro_error)
 		return -EROFS;
 	if (!dbg_is_tst_rcvry(c))
-		err = ubi_leb_change(c->ubi, lnum, buf, len, dtype);
+		err = ubi_leb_change(c->ubi, lnum, buf, len);
 	else
 		err = dbg_leb_change(c, lnum, buf, len, dtype);
 	if (err) {
@@ -183,7 +183,7 @@ int ubifs_leb_map(struct ubifs_info *c, int lnum, int dtype)
 	if (c->ro_error)
 		return -EROFS;
 	if (!dbg_is_tst_rcvry(c))
-		err = ubi_leb_map(c->ubi, lnum, dtype);
+		err = ubi_leb_map(c->ubi, lnum);
 	else
 		err = dbg_leb_map(c, lnum, dtype);
 	if (err) {
@@ -240,7 +240,7 @@ int ubifs_check_node(const struct ubifs_info *c, const void *buf, int lnum,
 {
 	int err = -EINVAL, type, node_len;
 	uint32_t crc, node_crc, magic;
-	const struct ubifs_ch *ch = buf;
+	struct ubifs_ch *ch = (struct ubifs_ch*)buf;
 
 	ubifs_assert(lnum >= 0 && lnum < c->leb_cnt && offs >= 0);
 	ubifs_assert(!(offs & 7) && offs < c->leb_size);

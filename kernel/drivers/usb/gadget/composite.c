@@ -798,6 +798,7 @@ static int unbind_config(struct usb_composite_dev *cdev,
 	return 0;
 }
 
+extern void wmt_cleanup_done_thread(int number);
 /**
  * usb_remove_config() - remove a configuration from a device.
  * @cdev: wraps the USB gadget
@@ -811,16 +812,14 @@ int usb_remove_config(struct usb_composite_dev *cdev,
 		      struct usb_configuration *config)
 {
 	unsigned long flags;
-
+	//wmt_cleanup_done_thread(1);
 	spin_lock_irqsave(&cdev->lock, flags);
-
 	if (cdev->config == config)
 		reset_config(cdev);
 
 	list_del(&config->list);
 
 	spin_unlock_irqrestore(&cdev->lock, flags);
-
 	return unbind_config(cdev, config);
 }
 

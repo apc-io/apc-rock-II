@@ -90,10 +90,15 @@ config BATTERY_DS2781
 
 	  If you are unsure, say N.
 
-source "drivers/power/wmt_battery/gauge/vt1603/Kconfig"
-source "drivers/power/wmt_battery/gauge/Kconfig"
-source "drivers/power/wmt_battery/charger/mps/Kconfig"
-source "drivers/power/wmt_battery/charger/g2214/Kconfig"
+source "drivers/power/vt1609/Kconfig"
+
+source "drivers/power/g2214/Kconfig"
+
+
+config BATTERY_WMT
+	tristate "wmt battery driver (wonder media & others)"
+	help
+	  Say Y here to enable support for batteries with wmt chip.	  
 
 config BATTERY_DS2782
 	tristate "DS2782/DS2786 standalone gas-gauge"

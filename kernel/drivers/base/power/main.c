@@ -62,6 +62,8 @@ struct dpm_watchdog {
 };
 
 static int async_error;
+extern int console_printk[];
+#define console_loglevel (console_printk[0])
 
 /**
  * device_pm_init - Initialize the PM-related part of a device object.
@@ -729,7 +731,8 @@ void dpm_resume(pm_message_t state)
 {
 	struct device *dev;
 	ktime_t starttime = ktime_get();
-
+	int tmp;
+	
 	might_sleep();
 
 	mutex_lock(&dpm_list_mtx);
@@ -743,7 +746,9 @@ void dpm_resume(pm_message_t state)
 			async_schedule(async_resume, dev);
 		}
 	}
-
+	
+	tmp = console_loglevel;
+	console_loglevel = 7;
 	while (!list_empty(&dpm_suspended_list)) {
 		dev = to_device(dpm_suspended_list.next);
 		get_device(dev);
@@ -766,6 +771,7 @@ void dpm_resume(pm_message_t state)
 			list_move_tail(&dev->power.entry, &dpm_prepared_list);
 		put_device(dev);
 	}
+	console_loglevel = tmp;	
 	mutex_unlock(&dpm_list_mtx);
 	async_synchronize_full();
 	dpm_show_time(starttime, state, NULL);
@@ -1219,12 +1225,16 @@ int dpm_suspend(pm_message_t state)
 {
 	ktime_t starttime = ktime_get();
 	int error = 0;
-
+	int tmp;
+	
 	might_sleep();
 
 	mutex_lock(&dpm_list_mtx);
 	pm_transition = state;
 	async_error = 0;
+
+	tmp = console_loglevel;
+	console_loglevel = 7;
 	while (!list_empty(&dpm_prepared_list)) {
 		struct device *dev = to_device(dpm_prepared_list.prev);
 
@@ -1246,6 +1256,7 @@ int dpm_suspend(pm_message_t state)
 		if (async_error)
 			break;
 	}
+	console_loglevel = tmp;
 	mutex_unlock(&dpm_list_mtx);
 	async_synchronize_full();
 	if (!error)

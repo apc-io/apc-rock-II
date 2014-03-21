@@ -11,5 +11,7 @@ config SWITCH_GPIO
 	depends on GENERIC_GPIO
 	help
 	  Say Y here to enable GPIO based switch support.
+	  
+source "drivers/switch/wmt/Kconfig"
 
 endif # SWITCH

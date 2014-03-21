@@ -725,7 +725,6 @@ int ubifs_jnl_write_data(struct ubifs_info *c, const struct inode *inode,
 		compr_type = UBIFS_COMPR_NONE;
 	else
 		compr_type = ui->compr_type;
-	//compr_type = UBIFS_COMPR_NONE;
 
 	out_len = dlen - UBIFS_DATA_NODE_SZ;
 	ubifs_compress(buf, len, &data->data, &out_len, &compr_type);

@@ -76,6 +76,13 @@ typedef enum {
 	VOUT_INF_MODE_MAX
 } vout_inf_mode_t;
 
+typedef enum {
+	TV_PAL,
+	TV_NTSC,
+	TV_UNDEFINED,
+	TV_MAX
+} vout_tvformat_t;
+
 typedef struct {
 	int num;
 	unsigned int vo_mask;	/* vo bit mask for multi vout */
@@ -229,6 +236,7 @@ vout_inf_t *vout_get_inf_entry_adapter(vout_mode_t mode);
 int vout_info_add_entry(vout_t *vo);
 vout_info_t *vout_info_get_entry(int no);
 void vout_info_set_fixed_timing(int no, struct fb_videomode *vmode);
+govrh_mod_t *vout_info_get_govr(int no);
 
 int vout_config(unsigned int mask,
 	vout_info_t *info, struct fb_videomode *vmode);

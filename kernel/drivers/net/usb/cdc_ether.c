@@ -429,7 +429,7 @@ void usbnet_cdc_status(struct usbnet *dev, struct urb *urb)
 	}
 }
 EXPORT_SYMBOL_GPL(usbnet_cdc_status);
-
+void check_set_mac(unsigned char *buf);
 int usbnet_cdc_bind(struct usbnet *dev, struct usb_interface *intf)
 {
 	int				status;
@@ -443,6 +443,7 @@ int usbnet_cdc_bind(struct usbnet *dev, struct usb_interface *intf)
 		return status;
 
 	status = usbnet_get_ethernet_addr(dev, info->ether->iMACAddress);
+    check_set_mac(dev->net->dev_addr);
 	if (status < 0) {
 		usb_set_intfdata(info->data, NULL);
 		usb_driver_release_interface(driver_of(intf), info->data);
@@ -640,7 +641,7 @@ static const struct usb_device_id	products [] = {
 };
 MODULE_DEVICE_TABLE(usb, products);
 
-static struct usb_driver cdc_driver = {
+struct usb_driver cdc_driver = {
 	.name =		"cdc_ether",
 	.id_table =	products,
 	.probe =	usbnet_probe,
@@ -650,6 +651,7 @@ static struct usb_driver cdc_driver = {
 	.reset_resume =	usbnet_resume,
 	.supports_autosuspend = 1,
 };
+EXPORT_SYMBOL_GPL(cdc_driver);
 
 module_usb_driver(cdc_driver);
 

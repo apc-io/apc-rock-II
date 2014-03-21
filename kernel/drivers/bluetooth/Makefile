@@ -4,15 +4,20 @@
 
 obj-$(CONFIG_BT_HCIVHCI)	+= hci_vhci.o
 obj-$(CONFIG_BT_HCIUART)	+= hci_uart.o
+obj-$(CONFIG_BT_BLUESLEEP)	+= bluesleep.o
 obj-$(CONFIG_BT_HCIBCM203X)	+= bcm203x.o
+obj-$(CONFIG_BT_HCIBCM_6330_6476)	+= wmt_rfkill_bluetooth.o
 obj-$(CONFIG_BT_HCIBPA10X)	+= bpa10x.o
 obj-$(CONFIG_BT_HCIBFUSB)	+= bfusb.o
 obj-$(CONFIG_BT_HCIDTL1)	+= dtl1_cs.o
 obj-$(CONFIG_BT_HCIBT3C)	+= bt3c_cs.o
 obj-$(CONFIG_BT_HCIBLUECARD)	+= bluecard_cs.o
 obj-$(CONFIG_BT_HCIBTUART)	+= btuart_cs.o
+obj-$(CONFIG_BT_TIBLUESLEEP)	+= ti_bluesleep.o
 
 obj-$(CONFIG_BT_HCIBTUSB)	+= btusb.o
+obj-$(CONFIG_BT_RTKBTUSB)	+= rtk_btusb.o
+obj-$(CONFIG_BT_COMM_BTUSB)	+= btusb_common.o
 obj-$(CONFIG_BT_HCIBTSDIO)	+= btsdio.o
 
 obj-$(CONFIG_BT_ATH3K)		+= ath3k.o

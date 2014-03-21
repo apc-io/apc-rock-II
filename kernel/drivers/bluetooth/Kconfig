@@ -12,6 +12,20 @@ config BT_HCIBTUSB
 
 	  Say Y here to compile support for Bluetooth USB devices into the
 	  kernel or say M to compile it as module (btusb).
+	  
+
+
+config BT_RTKBTUSB
+	tristate "RTK HCI USB driver"
+	depends on USB
+	help
+	  RTK Bluetooth HCI USB driver
+
+config BT_COMM_BTUSB
+	tristate "Common HCI USB driver"
+	depends on USB
+	help
+	  Common Bluetooth HCI USB driver	  
 
 config BT_HCIBTSDIO
 	tristate "HCI SDIO driver"
@@ -92,6 +106,36 @@ config BT_HCIBCM203X
 
 	  Say Y here to compile support for HCI BCM203x devices into the
 	  kernel or say M to compile it as module (bcm203x).
+
+config BT_HCIBCM_6330_6476
+	tristate "bcm ap6476 ap6330 bluetooth power manager"
+	help
+	  bcm ap6476 ap6330 bluetooth driver.
+	  This driver provides the power enable and ouput 32KHz
+
+	  Say Y here to compile support for bcm ap6476 ap6330 devices into the
+	  kernel or say M to compile it as module.	  
+
+config BT_BLUESLEEP
+        tristate "Bluesleep driver support"
+        depends on SERIAL_TEGRA
+        help
+          Bluetooth Bluesleep Driver.
+          This driver provides the dynamic active power saving mechanism for
+          bluetooth radio devices.
+
+          Say Y here to compile support for bluesleep support into the kernel
+          or say M to compile it as module (bluesleep).
+
+config BT_TIBLUESLEEP
+        tristate "Bluesleep driver support for TI"
+        help
+          TI Bluetooth Bluesleep Driver.
+          This driver provides the dynamic active power saving mechanism for
+          bluetooth radio devices.
+
+          Say Y here to compile support for bluesleep support into the kernel
+          or say M to compile it as module (bluesleep).
 
 config BT_HCIBPA10X
 	tristate "HCI BPA10x USB driver"

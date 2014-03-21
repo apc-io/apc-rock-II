@@ -21,19 +21,11 @@
  * 4F, 533, Chung-Cheng Road, Hsin-Tien, Taipei 231, R.O.C
 --*/
 
-
-#define WMT_VID_C
-
-
-#include <linux/i2c.h>      /* for I2C_M_RD */
-
-
-#include <linux/slab.h>  /*for kmalloc, kzalloc*/
+#include <linux/i2c.h>
+#include <linux/slab.h> 
 #include <linux/module.h>
-
-#include "wmt-vid.h"
-
 #include <linux/videodev2.h>
+#include "wmt-vid.h"
 
 //#define VID_REG_TRACE
 #ifdef VID_REG_TRACE
@@ -47,8 +39,7 @@
 //#define VID_DEBUG    /* Flag to enable debug message */
 //#define VID_DEBUG_DETAIL
 //#define VID_TRACE
-
-#define VID_INFO
+//#define VID_INFO
 
 #ifdef VID_DEBUG
 #define DBG_MSG(fmt, args...)      PRINT("{%s} " fmt, __FUNCTION__ , ## args)
@@ -78,71 +69,46 @@
 
 #define VID_INT_MODE        
 
-#define ALIGN64(a)          ((((a)+63)>>6)<<6)
-
-extern void wmt_i2c_xfer_continue_if(struct i2c_msg *msg, unsigned int num);
-extern void wmt_i2c_xfer_if(struct i2c_msg *msg);
-
-extern int wmt_i2c_xfer_continue_if_4(struct i2c_msg *msg, unsigned int num, int bus_id);
-
-
-
 static vid_fb_t *_cur_fb;
 static vid_fb_t *_prev_fb;
 
-static unsigned int  cur_y_addr;   // temp
-static unsigned int  cur_c_addr;   // temp
+static spinlock_t vid_lock;
+static unsigned int vid_i2c_gpio_en = 0;
 
-static spinlock_t   vid_lock;
-static unsigned int  vid_i2c_gpio_en =0;
+static swi2c_reg_t vid_i2c0_scl;
+static swi2c_reg_t vid_i2c0_sda;
+static swi2c_handle_t vid_swi2c;
 
-swi2c_reg_t vid_i2c0_scl;
-swi2c_reg_t vid_i2c0_sda;
-swi2c_handle_t vid_swi2c;
+static struct i2c_adapter *vid_i2c_adapter[2];
+static struct i2c_client *vid_i2c_client[2];
 
-struct i2c_adapter *vid_i2c_adapter[2];
-struct i2c_client *vid_i2c_client[2];
-
-#define PMC_ClOCK_ENABLE_HIGHER          PM_CTRL_BASE_ADDR+0x254
-
-
-
+static int vid_dev_tot_num;
+static int vid_dev_num ;
 
 #define WMT_VID_I2C_CHANNEL  2
-/*-------------------------------Body Functions------------------------------------*/
 
-/*!*************************************************************************
-* vid_gpio_init
-* 
-* Private Function by Max Chen, 2009/1/25
-*/
-/*!
-* \Init gpio setting
-*
-* \retval none
-*/
 static void vid_gpio_init(vid_mode mode)
 {
+	auto_pll_divisor(DEV_C24MOUT, CLK_ENABLE, 0, 0); 
+	auto_pll_divisor(DEV_VID, CLK_ENABLE, 0, 0); 
 
-    auto_pll_divisor(DEV_C24MOUT, CLK_ENABLE, 0, 0); 
-    auto_pll_divisor(DEV_VID, CLK_ENABLE, 0, 0); 
+	GPIO_CTRL_GP8_VDIN_BYTE_VAL = 0x0;
+	PULL_EN_GP8_VDIN_BYTE_VAL = 0x0;
 
-    GPIO_CTRL_GP8_VDIN_BYTE_VAL = 0x0;
-    PULL_EN_GP8_VDIN_BYTE_VAL = 0x0;
+	GPIO_CTRL_GP9_VSYNC_BYTE_VAL  &= ~(BIT0|BIT1|BIT2);
+	PULL_EN_GP9_VSYNC_BYTE_VAL &= ~(BIT0|BIT1|BIT2);
 
-    GPIO_CTRL_GP9_VSYNC_BYTE_VAL  &= ~(BIT0|BIT1|BIT2);
-    PULL_EN_GP9_VSYNC_BYTE_VAL &= ~(BIT0|BIT1|BIT2);
+	GPIO_CTRL_GP17_I2C_BYTE_VAL &= ~BIT6;	//24Mhz on , not set to GPIO
 
-    GPIO_CTRL_GP17_I2C_BYTE_VAL &= ~BIT6;//24Mhz on , not set to GPIO
+	return;
+}
 
-    
-    return;
-} /* End of vid_gpio_init()*/
 void vid_set_ntsc_656(void)
 {
 	VID_REG_SET32( REG_BASE_VID+0x08, 	0x0 );	
 	VID_REG_SET32( REG_BASE_VID+0x30, 0x000006b4);	// N_LN_LENGTH : 133m: d1716(6b4h) , 166m: d1715(6b3) 
 }
+
 void vid_set_pal_656(void)
 {
 	VID_REG_SET32( REG_BASE_VID+0x08, 0x0 );	
@@ -151,18 +117,16 @@ void vid_set_pal_656(void)
 
 void wmt_vid_set_common_mode(vid_tvsys_e tvsys)	
 {
-	
 	TRACE("wmt_vid_set_common_mode() \n");
 
 	if (tvsys == VID_NTSC)
 		vid_set_ntsc_656();
 	else
 		vid_set_pal_656();
-	
+
 	VID_REG_SET32( REG_BASE_VID+0x04, 0x100     );	// TMODE[0],REG_UPDATE[8]
 
-	if (tvsys==VID_NTSC)
-	{
+	if (tvsys==VID_NTSC) {
 		VID_REG_SET32( REG_BASE_VID+0x14, 0x10a0004 );		// VSBB[25:16]:VSBT[9:0]; 139/1=PAL  10A/4=NTSC
 		VID_REG_SET32( REG_BASE_VID+0x1c, 0x1370018 );		// PAL_TACTEND[25:16], PAL_TACTBEG[9:0]
 		VID_REG_SET32( REG_BASE_VID+0x20, 0x26f0151 );		// PAL_BACTEND[25:16], PAL_BACTBEG[9:0]
@@ -170,23 +134,20 @@ void wmt_vid_set_common_mode(vid_tvsys_e tvsys)
 		VID_REG_SET32( REG_BASE_VID+0x68, 720        );	// WIDTH[7:0];
 		VID_REG_SET32( REG_BASE_VID+0x6C, 768        );	// LN_WIDTH[7:0]
 		VID_REG_SET32( REG_BASE_VID+0x70, 480        );	// VID_HEIGHT[9:0]
-		
-	}else{
+	} else {
 		VID_REG_SET32( REG_BASE_VID+0x14, 0x1390001 );		// VSBB[25:16]:VSBT[9:0]; 139/1=PAL  10A/4=NTSC
 		VID_REG_SET32( REG_BASE_VID+0x1c, 0x1360017 );		// PAL_TACTEND[25:16], PAL_TACTBEG[9:0]
 		VID_REG_SET32( REG_BASE_VID+0x20, 0x26f0150 );		// PAL_BACTEND[25:16], PAL_BACTBEG[9:0]
 
-       	VID_REG_SET32( REG_BASE_VID+0x68, 720        );	// WIDTH[7:0];
-       	VID_REG_SET32( REG_BASE_VID+0x6C, 768        );	// LN_WIDTH[7:0]
-       	VID_REG_SET32( REG_BASE_VID+0x70, 576        );	// VID_HEIGHT[9:0]
-		
+		VID_REG_SET32( REG_BASE_VID+0x68, 720        );	// WIDTH[7:0];
+		VID_REG_SET32( REG_BASE_VID+0x6C, 768        );	// LN_WIDTH[7:0]
+		VID_REG_SET32( REG_BASE_VID+0x70, 576        );	// VID_HEIGHT[9:0]
 	}
 
-	
 	VID_REG_SET32( REG_BASE_VID+0x10, 0x20001   );		// HSB[9:0];HSW[9:0];HSP[28]
 	VID_REG_SET32( REG_BASE_VID+0x18, 0x3f0002  );		// HVDLY @[25:16];VSW @[9:0];VSP[28]
 	VID_REG_SET32( REG_BASE_VID+0x24, 0x1060017 );		// NTSC_TACTEND[25:16],NTSC_TACTBEG[9:0]
-       VID_REG_SET32( REG_BASE_VID+0x28, 0x20d011e );		// NTSC_BACTEND[25:16],NTSC_BACTBEG[9:0]
+	VID_REG_SET32( REG_BASE_VID+0x28, 0x20d011e );		// NTSC_BACTEND[25:16],NTSC_BACTBEG[9:0]
 
 	VID_REG_SET32( REG_BASE_VID+0x78, 0 	     );	// REG_OUTPUT444_EN,( 0:422 format, 1:444 format )
 	VID_REG_SET32( REG_BASE_VID+0x7C, 0 	     );	// REG_HSCALE_MODE(0:bypass , 1: horizontal scale 1/2)
@@ -201,7 +162,6 @@ int wmt_vid_i2c_xfer(struct i2c_msg *msg, unsigned int num, int bus_id)
 	int  ret = 1;
 	int i = 0;
 
-
 	if (num > 1) {
 		for (i = 0; i < num - 1; ++i)
 			msg[i].flags |= I2C_M_NOSTART;
@@ -209,40 +169,28 @@ int wmt_vid_i2c_xfer(struct i2c_msg *msg, unsigned int num, int bus_id)
 	ret = i2c_transfer(vid_i2c_adapter[vid_dev_num], msg, num);
 
 	if (ret <= 0) {
-		printk("[%s] fail ret 0x%08x \n", __func__, ret);
+		printk("[%s] fail ret %d \n", __func__, ret);
 		return ret;
 	}
-	
+
 	return ret;
 }
 
 int write_array_2_i2c(int slave_addr, char *array_addr, int array_size)
 {
-
 	int i=0;
 	
-	for(i=0;i<array_size;i+=2)
-	{
-		wmt_vid_i2c_write(slave_addr,array_addr[i],array_addr[i+1]);
+	for (i = 0; i < array_size; i += 2) {
+		wmt_vid_i2c_write(slave_addr, array_addr[i], array_addr[i+1]);
 	}
-    return 0;
-}
 
-/*!*************************************************************************
-* wmt_vid_i2c_write_page
-* 
-*/
-/*!
-* \brief
-*       set VID mode
-* \retval  0 if success
-*/
+	return 0;
+}
 
 int wmt_vid_i2c_write_page(int chipId ,unsigned int index,char *pdata,int len)
 {
-
     struct i2c_msg msg[1];
-    unsigned char buf[len+1];
+    unsigned char buf[4];
     int ret;
     
     buf[0] = index;
@@ -253,27 +201,15 @@ int wmt_vid_i2c_write_page(int chipId ,unsigned int index,char *pdata,int len)
     msg[0].len = len;
     msg[0].buf = buf;
 
-
-
     ret = wmt_vid_i2c_xfer(msg,1,1);
     
     return ret;
-} /* End of wmt_vid_i2c_write_page() */
+}
 
-
-/*!*************************************************************************
-* wmt_vid_i2c_read_page
-* 
-*/
-/*!
-* \brief
-*       set VID mode
-* \retval  0 if success
-*/ 
 int wmt_vid_i2c_read_page(int chipId ,unsigned int index,char *pdata,int len) 
 {
     struct i2c_msg msg[2];
-    unsigned char buf[len+1];
+    unsigned char buf[4];
     
     memset(buf,0x55,len+1);
     buf[0] = index;
@@ -295,95 +231,68 @@ int wmt_vid_i2c_read_page(int chipId ,unsigned int index,char *pdata,int len)
     memcpy(pdata,buf,len);
 
     return 0;
-} /* End of wmt_vid_i2c_read_page() */
+}
 
-/*!*************************************************************************
-* wmt_vid_i2c_read
-* 
-*/
-/*!
-* \brief
-*       set VID mode
-* \retval  0 if success
-*/ 
 int wmt_vid_i2c_read(int chipId ,unsigned int index) 
 {
-    char retval;
+	char retval;
 
-    if (vid_i2c_gpio_en)
-    {
-			wmt_swi2c_read( &vid_swi2c, chipId*2,  index, &retval, 1 );
-    }else{
-    wmt_vid_i2c_read_page( chipId ,index,&retval,1) ;   
-    }
+	if (vid_i2c_gpio_en) {
+		wmt_swi2c_read(&vid_swi2c, chipId*2, index, &retval, 1);
+	} else {
+		wmt_vid_i2c_read_page( chipId ,index,&retval,1) ;   
+	}
 
-    
-    return retval;
-} /* End of wmt_vid_i2c_read() */
+	return retval;
+}
 
-/*!*************************************************************************
-* wmt_vid_i2c_write
-* 
-*/
-/*!
-* \brief
-*       set VID mode
-* \retval  0 if success
-*/ 
 int wmt_vid_i2c_write(int chipId ,unsigned int index,char data)
 {
-    if (vid_i2c_gpio_en)
-    {
-		wmt_swi2c_write( &vid_swi2c, chipId*2,  index, &data, 2 );
-    }else{
-    	    	wmt_vid_i2c_write_page(chipId ,index,&data,2);
-    }
+	if (vid_i2c_gpio_en) {
+		wmt_swi2c_write(&vid_swi2c, chipId*2,  index, &data, 2);
+	} else {
+		wmt_vid_i2c_write_page(chipId ,index, &data, 2);
+	}
 
-    return 0;
-} /* End of wmt_vid_i2c_write() */
+	return 0;
+}
 
-/*!*************************************************************************
-* wmt_vid_i2c_write16addr
-* 
-*/
-/*!
-* \brief
-*       set VID mode
-* \retval  0 if success
-*/ 
 int wmt_vid_i2c_write16addr(int chipId ,unsigned int index,unsigned int data)
 {
 	int ret=0;
 	struct i2c_msg msg[1];
 	unsigned char buf[4];
-    if (vid_i2c_gpio_en)
-    {
-    	DBG_ERR("wmt_vid_i2c_write16addr() Not support GPIO mode now");
-    	return -1;
-    }
+
+	if (vid_i2c_gpio_en) {
+		DBG_ERR("wmt_vid_i2c_write16addr() Not support GPIO mode now");
+		return -1;
+	}
+
 	buf[0]=((index>>8) & 0xff);
 	buf[1]=(index & 0xff);
 	buf[2]=(data & 0xff);
 
 	msg[0].addr = chipId;
 	msg[0].flags = 0;
-       msg[0].flags &= ~(I2C_M_RD);
+	msg[0].flags &= ~(I2C_M_RD);
 	msg[0].len = 3;
 	msg[0].buf = buf;
 	ret = wmt_vid_i2c_xfer(msg,1,1);
 
 	return ret;
 }
+
 int wmt_vid_i2c_write16data(int chipId ,unsigned int index,unsigned int data)
 {
 	int ret=0;
 	struct i2c_msg msg[1];
 	unsigned char buf[4];
-    if (vid_i2c_gpio_en)
-    {
-    	DBG_ERR("wmt_vid_i2c_write16data() Not support GPIO mode now");
-    	return -1;
-    }
+
+	if (vid_i2c_gpio_en) {
+		DBG_ERR("wmt_vid_i2c_write16data() Not support GPIO mode now");
+		return -1;
+	}
+
 	buf[0]=((index>>8) & 0xff);
 	buf[1]=(index & 0xff);
 	buf[2]=((data>>8) & 0xff);
@@ -391,7 +300,7 @@ int wmt_vid_i2c_write16data(int chipId ,unsigned int index,unsigned int data)
 
 	msg[0].addr = chipId;
 	msg[0].flags = 0;
-    msg[0].flags &= ~(I2C_M_RD);
+	msg[0].flags &= ~(I2C_M_RD);
 	msg[0].len = 4;
 	msg[0].buf = buf;
 	ret = wmt_vid_i2c_xfer(msg,1,1);
@@ -399,40 +308,30 @@ int wmt_vid_i2c_write16data(int chipId ,unsigned int index,unsigned int data)
 	return ret;
 }
 
-/*!*************************************************************************
-* wmt_vid_i2c_read16addr
-* 
-*/
-/*!
-* \brief
-*       set VID mode
-* \retval  0 if success
-*/ 
-
 int wmt_vid_i2c_read16addr(int chipId ,unsigned int index)
 {
 	int ret=0;
 	struct i2c_msg msg[2];
 	unsigned char buf[2];
 	unsigned int val;
-    if (vid_i2c_gpio_en)
-    {
-    	DBG_ERR("wmt_vid_i2c_read16addr() Not support GPIO mode now");
-    	return -1;
-    }
+
+	if (vid_i2c_gpio_en) {
+		DBG_ERR("wmt_vid_i2c_read16addr() Not support GPIO mode now");
+		return -1;
+	}
 
 	buf[0]=((index>>8) & 0xff);
 	buf[1]=(index & 0xff);
 
 	msg[0].addr = chipId;
 	msg[0].flags = 0;
-       msg[0].flags &= ~(I2C_M_RD);
+	msg[0].flags &= ~(I2C_M_RD);
 	msg[0].len = 2;
 	msg[0].buf = buf;
 
 	msg[1].addr = chipId;
 	msg[1].flags = 0;
-       msg[1].flags |= (I2C_M_RD);
+	msg[1].flags |= (I2C_M_RD);
 	msg[1].len = 1;
 	msg[1].buf = buf;
 
@@ -441,30 +340,31 @@ int wmt_vid_i2c_read16addr(int chipId ,unsigned int index)
 	val=buf[0];
 	return val;
 }
+
 int wmt_vid_i2c_read16data(int chipId ,unsigned int index)
 {
 	int ret=0;
 	struct i2c_msg msg[2];
 	unsigned char buf[2];
 	unsigned int val;
-    if (vid_i2c_gpio_en)
-    {
-    	DBG_ERR("wmt_vid_i2c_read16data() Not support GPIO mode now");
-    	return -1;
-    }
+
+	if (vid_i2c_gpio_en) {
+		DBG_ERR("wmt_vid_i2c_read16data() Not support GPIO mode now");
+		return -1;
+	}
 
 	buf[0]=((index>>8) & 0xff);
 	buf[1]=(index & 0xff);
 
 	msg[0].addr = chipId;
 	msg[0].flags = 0;
-    msg[0].flags &= ~(I2C_M_RD);
+	msg[0].flags &= ~(I2C_M_RD);
 	msg[0].len = 2;
 	msg[0].buf = buf;
 
 	msg[1].addr = chipId;
 	msg[1].flags = 0;
-    msg[1].flags |= (I2C_M_RD);
+	msg[1].flags |= (I2C_M_RD);
 	msg[1].len = 2;
 	msg[1].buf = buf;
 
@@ -472,7 +372,8 @@ int wmt_vid_i2c_read16data(int chipId ,unsigned int index)
 
 	//printk("wmt_vid_i2c_read16data(%x,%x)\n",buf[0],buf[1]);
 
-	val=((buf[0]&0xff)<<8) | (buf[1]&0xff);
+	val = ((buf[0]&0xff)<<8) | (buf[1]&0xff);
+
 	return val;
 }
 
@@ -517,12 +418,13 @@ static const struct i2c_device_id wmt_vid_i2c_id_0[] = {
 MODULE_DEVICE_TABLE(i2c, wmt_vid_i2c_id_0);
 
 static struct i2c_driver wmt_vid_i2c_driver_0 = {
-		.probe = wmt_vid_i2c_probe_0,
-		.remove = wmt_vid_i2c_remove_0,
-		.id_table = wmt_vid_i2c_id_0,
-		.driver = { .name = "wmt_vid_i2c_0", },
+	.probe = wmt_vid_i2c_probe_0,
+	.remove = wmt_vid_i2c_remove_0,
+	.id_table = wmt_vid_i2c_id_0,
+	.driver = {
+		.name = "wmt_vid_i2c_0",
+	},
 };
-
 
 static struct i2c_board_info wmt_vid_i2c_board_info_0 = {
 	.type          = "wmt_vid_i2c_0",
@@ -538,23 +440,24 @@ struct wmt_vid_i2c_priv_1 {
 };
 
 static int __devinit wmt_vid_i2c_probe_1(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+					 const struct i2c_device_id *id)
 {
 	struct wmt_vid_i2c_priv *wmt_vid_i2c;
 	int ret=0;
 
 	printk("wmt_vid_i2c_probe_1() \n");
+
 	if (!i2c_check_functionality(vid_i2c_client[1]->adapter, I2C_FUNC_I2C)) {
 		printk(KERN_ERR "wmt_vid_i2c_probe: need I2C_FUNC_I2C\n");
 		return -ENODEV;
 	}
 
-	
 	wmt_vid_i2c = kzalloc(sizeof(struct wmt_vid_i2c_priv_1), GFP_KERNEL);
 	if (wmt_vid_i2c == NULL) {
 		printk("wmt_vid_i2c_probe kzalloc fail");
 		return -ENOMEM;
 	}
+
 	i2c_set_clientdata(i2c, wmt_vid_i2c);
 
 	return ret;
@@ -573,12 +476,11 @@ static const struct i2c_device_id wmt_vid_i2c_id_1[] = {
 MODULE_DEVICE_TABLE(i2c, wmt_vid_i2c_id_1);
 
 static struct i2c_driver wmt_vid_i2c_driver_1 = {
-		.probe = wmt_vid_i2c_probe_1,
-		.remove = wmt_vid_i2c_remove_1,
-		.id_table = wmt_vid_i2c_id_1,
-		.driver = { .name = "wmt_vid_i2c_1", },
+	.probe = wmt_vid_i2c_probe_1,
+	.remove = wmt_vid_i2c_remove_1,
+	.id_table = wmt_vid_i2c_id_1,
+	.driver = { .name = "wmt_vid_i2c_1", },
 };
-
 
 static struct i2c_board_info wmt_vid_i2c_board_info_1 = {
 	.type          = "wmt_vid_i2c_1",
@@ -595,24 +497,23 @@ int wmt_vid_i2c_set_same_dev(void)
 	vid_i2c_adapter[1] = vid_i2c_adapter[0];
 	vid_i2c_client[1] = vid_i2c_client[0];
 
-    return 0;
+	return 0;
 }
 
-
-
-int wmt_vid_i2c_init( int dev_num, short dev_id, struct i2c_adapter *adapter, struct i2c_client *client)
+int wmt_vid_i2c_init(int dev_num, short dev_id)
 {
 	struct i2c_board_info *wmt_vid_i2c_bi ;
-       
+	struct i2c_adapter *adapter;
+	struct i2c_client *client;
 
-      int ret =0;
+	int ret =0;
 
 	printk("wmt_vid_i2c_init() dev_num %d  dev_id 0x%02x \n",dev_num,dev_id);
-      if (dev_num == 0)
-      		wmt_vid_i2c_bi = &wmt_vid_i2c_board_info_0;
-      else
-      		wmt_vid_i2c_bi = &wmt_vid_i2c_board_info_1;
 
+	if (dev_num == 0)
+		wmt_vid_i2c_bi = &wmt_vid_i2c_board_info_0;
+	else
+		wmt_vid_i2c_bi = &wmt_vid_i2c_board_info_1;
 
 	adapter = i2c_get_adapter(WMT_VID_I2C_CHANNEL);
 	if (adapter == NULL) {
@@ -629,7 +530,7 @@ int wmt_vid_i2c_init( int dev_num, short dev_id, struct i2c_adapter *adapter, st
 	}
 
 	vid_dev_tot_num = dev_num+1;
-       vid_i2c_client[dev_num] = client;
+	vid_i2c_client[dev_num] = client;
 	vid_i2c_adapter[dev_num] = adapter;
 
 	i2c_put_adapter(adapter);
@@ -638,183 +539,147 @@ int wmt_vid_i2c_init( int dev_num, short dev_id, struct i2c_adapter *adapter, st
 	else
 		ret = i2c_add_driver(&wmt_vid_i2c_driver_1);
 
-
 	if (ret) {
 		printk("i2c_add_driver fail");
 	}	
 
 	return ret;
 }
+
 int wmt_vid_i2c_release(void)
 {
+	int i;
 
-	int i=0;
-	
-	for (i=0; i<vid_dev_tot_num; i++)
-	{
-	      i2c_unregister_device(vid_i2c_client[i]);
-	      if(i == 0)
-	      		wmt_vid_i2c_remove_0(vid_i2c_client[i]);
-	      else
-	      		wmt_vid_i2c_remove_1(vid_i2c_client[i]);
+	for (i = 0; i < vid_dev_tot_num; i++) {
+		i2c_unregister_device(vid_i2c_client[i]);
+		if (i == 0) {
+			wmt_vid_i2c_remove_0(vid_i2c_client[i]);
+			i2c_del_driver(&wmt_vid_i2c_driver_0);
+		} else {
+			wmt_vid_i2c_remove_1(vid_i2c_client[i]);
+			i2c_del_driver(&wmt_vid_i2c_driver_1);
+		}
 	}
-	return 0;
 
+	return 0;
 }
 
-
-/*!*************************************************************************
-* wmt_vid_set_mode
-* 
-*/
-/*!
-* \brief
-*       set VID mode
-* \retval  0 if success
-*/ 
 int wmt_vid_set_mode(int width, int height, unsigned int pix_format)
 {
-    TRACE("Enter\n");
+	TRACE("Enter\n");
 
-    VID_REG_SET32( REG_VID_WIDTH,  width ); /* VID output width */
-    VID_REG_SET32( REG_VID_LINE_WIDTH,  (width) );
-    VID_REG_SET32( REG_VID_HEIGHT, height );    /* VID output height */
+	VID_REG_SET32(REG_VID_WIDTH, width); /* VID output width */
+	VID_REG_SET32(REG_VID_LINE_WIDTH, width);
+	VID_REG_SET32(REG_VID_HEIGHT, height);    /* VID output height */
+
 	if (pix_format == V4L2_PIX_FMT_YUYV) // YUV422
 	{
-	    DBG_INFO("V4L2_PIX_FMT_YUYV \n");
-	     VID_REG_SET32( REG_BASE_VID+0x90, 0x0 );    //CMOS Sensor Input mode, set to YUV
-	     VID_REG_SET32( REG_BASE_VID+0x98, 0x0 );    //CMOS RGB Output Mode, only RGB565 need set to '1'
-	     VID_REG_SET32( REG_BASE_VID+0x78, 0x0 );    //REG_OUTPUT444_EN, set to YUV 422
-	}else if (pix_format == V4L2_PIX_FMT_YUV444){
-	    DBG_INFO("V4L2_PIX_FMT_YUYV \n");
-	     VID_REG_SET32( REG_BASE_VID+0x90, 0x0 );    //CMOS Sensor Input mode, set to YUV
-	     VID_REG_SET32( REG_BASE_VID+0x98, 0x0 );    //CMOS RGB Output Mode, only RGB565 need set to '1'
-	     VID_REG_SET32( REG_BASE_VID+0x78, 0x1 );    //REG_OUTPUT444_EN, set to YUV 444
-	}else if (pix_format == V4L2_PIX_FMT_RGB565){
-	    DBG_INFO("V4L2_PIX_FMT_RGB565 \n");
-	     VID_REG_SET32( REG_BASE_VID+0x90, 0x1 );    //CMOS Sensor Input mode, Set to RGB
-	     VID_REG_SET32( REG_BASE_VID+0x98, 0x1 );    //CMOS RGB Output Mode, only RGB565 need set to '1'
-	}else if (pix_format == V4L2_PIX_FMT_RGB32){
-	    DBG_INFO("V4L2_PIX_FMT_RGB888 \n");
-	     VID_REG_SET32( REG_BASE_VID+0x90, 0x1 );    //CMOS Sensor Input mode, Set to RGB
-	     VID_REG_SET32( REG_BASE_VID+0x98, 0x0 );    //CMOS RGB Output Mode , only RGB565 need set to '1'
-	}else if (pix_format == V4L2_PIX_FMT_NV12){
-	    DBG_INFO("V4L2_PIX_FMT_NV12 \n");
-	     VID_REG_SET32( REG_BASE_VID+0x90, 0x0 );    //CMOS Sensor Input mode, set to YUV
-	     VID_REG_SET32( REG_BASE_VID+0x98, 0x0 );    //CMOS RGB Output Mode, only RGB565 need set to '1'
-	     VID_REG_SET32( REG_BASE_VID+0x78, 0x10 );
-         VID_REG_SET32( REG_BASE_VID+0x74, 0x01 );
-     }else if (pix_format == V4L2_PIX_FMT_NV21){
-	    DBG_INFO("V4L2_PIX_FMT_V21 \n");
-	     VID_REG_SET32( REG_BASE_VID+0x90, 0x0 );    //CMOS Sensor Input mode, set to YUV
-	     VID_REG_SET32( REG_BASE_VID+0x98, 0x0 );    //CMOS RGB Output Mode, only RGB565 need set to '1'
-	     VID_REG_SET32( REG_BASE_VID+0x78, 0x10 );
-         VID_REG_SET32( REG_BASE_VID+0x74, 0x11 );
-     }else{
-	    pix_format = V4L2_PIX_FMT_YUYV;
-	    DBG_INFO("V4L2_PIX_unknow , set to V4L2_PIX_FMT_YUYV \n");
+		DBG_INFO("V4L2_PIX_FMT_YUYV \n");
+		VID_REG_SET32( REG_BASE_VID+0x90, 0x0);    //CMOS Sensor Input mode, set to YUV
+		VID_REG_SET32( REG_BASE_VID+0x98, 0x0);    //CMOS RGB Output Mode, only RGB565 need set to '1'
+		VID_REG_SET32( REG_BASE_VID+0x78, 0x0);    //REG_OUTPUT444_EN, set to YUV 422
 	}
-        
-    TRACE("Leave\n");
+	else if (pix_format == V4L2_PIX_FMT_YUV444) {
+		DBG_INFO("V4L2_PIX_FMT_YUYV \n");
+		VID_REG_SET32( REG_BASE_VID+0x90, 0x0);    //CMOS Sensor Input mode, set to YUV
+		VID_REG_SET32( REG_BASE_VID+0x98, 0x0);    //CMOS RGB Output Mode, only RGB565 need set to '1'
+		VID_REG_SET32( REG_BASE_VID+0x78, 0x1);    //REG_OUTPUT444_EN, set to YUV 444
+	}
+	else if (pix_format == V4L2_PIX_FMT_RGB565) {
+		DBG_INFO("V4L2_PIX_FMT_RGB565 \n");
+		VID_REG_SET32( REG_BASE_VID+0x90, 0x1);    //CMOS Sensor Input mode, Set to RGB
+		VID_REG_SET32( REG_BASE_VID+0x98, 0x1);    //CMOS RGB Output Mode, only RGB565 need set to '1'
+	}
+	else if (pix_format == V4L2_PIX_FMT_RGB32) {
+		DBG_INFO("V4L2_PIX_FMT_RGB888 \n");
+		VID_REG_SET32( REG_BASE_VID+0x90, 0x1);    //CMOS Sensor Input mode, Set to RGB
+		VID_REG_SET32( REG_BASE_VID+0x98, 0x0);    //CMOS RGB Output Mode , only RGB565 need set to '1'
+	}
+	else if (pix_format == V4L2_PIX_FMT_NV12) {
+		DBG_INFO("V4L2_PIX_FMT_NV12 \n");
+		VID_REG_SET32( REG_BASE_VID+0x90, 0x0);    //CMOS Sensor Input mode, set to YUV
+		VID_REG_SET32( REG_BASE_VID+0x98, 0x0);    //CMOS RGB Output Mode, only RGB565 need set to '1'
+		VID_REG_SET32( REG_BASE_VID+0x78, 0x10);
+		VID_REG_SET32( REG_BASE_VID+0x74, 0x01);
+	}
+	else if (pix_format == V4L2_PIX_FMT_NV21) {
+		DBG_INFO("V4L2_PIX_FMT_NV21 \n");
+		VID_REG_SET32( REG_BASE_VID+0x90, 0x0);    //CMOS Sensor Input mode, set to YUV
+		VID_REG_SET32( REG_BASE_VID+0x98, 0x0);    //CMOS RGB Output Mode, only RGB565 need set to '1'
+		VID_REG_SET32( REG_BASE_VID+0x78, 0x10);
+		VID_REG_SET32( REG_BASE_VID+0x74, 0x11);
+	}
+	else {
+		pix_format = V4L2_PIX_FMT_YUYV;
+		DBG_INFO("V4L2_PIX_unknow , set to V4L2_PIX_FMT_YUYV \n");
+	}
 
-    return 0;
-} /* End of wmt_vid_set_mode() */
+	TRACE("Leave\n");
 
-/*!*************************************************************************
-* wmt_vid_set_cur_fb
-* 
-*/
-/*!
-* \brief
-*       set VID source address for Y and C
-* \retval  0 if success
-*/ 
+	return 0;
+}
+
 int wmt_vid_set_cur_fb(vid_fb_t *fb)
 {
-    unsigned long flags =0;
+	unsigned long flags =0;
 
-    spin_lock_irqsave(&vid_lock, flags);
+	spin_lock_irqsave(&vid_lock, flags);
 
-    _prev_fb = _cur_fb;
-    _cur_fb  = fb;
+	_prev_fb = _cur_fb;
+	_cur_fb  = fb;
 
-    fb->is_busy = 1;
-    fb->done    = 0;
-    wmt_vid_set_addr(fb->y_addr, fb->c_addr);		    
+	fb->is_busy = 1;
+	fb->done    = 0;
+	wmt_vid_set_addr(fb->y_addr, fb->c_addr);		    
 
-    spin_unlock_irqrestore(&vid_lock, flags);
+	spin_unlock_irqrestore(&vid_lock, flags);
 
-    return 0;
-} /* End of wmt_vid_set_cur_fb() */
+	return 0;
+}
 
-/*!*************************************************************************
-* wmt_vid_get_cur_fb
-* 
-*/
-/*!
-* \brief
-*       set VID source address for Y and C
-* \retval  0 if success
-*/ 
-vid_fb_t * wmt_vid_get_cur_fb(void)
+vid_fb_t *wmt_vid_get_cur_fb(void)
 {
-    unsigned long flags =0;
-    vid_fb_t *fb;    
-    
-    spin_lock_irqsave(&vid_lock, flags);
-    fb = _cur_fb;
-    spin_unlock_irqrestore(&vid_lock, flags);
+	unsigned long flags =0;
+	vid_fb_t *fb;    
 
-    return fb;
-} /* End of wmt_vid_get_cur_fb() */
+	spin_lock_irqsave(&vid_lock, flags);
+	fb = _cur_fb;
+	spin_unlock_irqrestore(&vid_lock, flags);
 
-/*!*************************************************************************
-* wmt_vid_set_addr
-* 
-*/
-/*!
-* \brief
-*       set VID source address for Y and C
-* \retval  0 if success
-*/ 
+	return fb;
+}
+
 int wmt_vid_set_addr(unsigned int y_addr, unsigned int c_addr)
 {
-    TRACE("Enter\n");
+	unsigned int  cur_y_addr;   // temp
+	unsigned int  cur_c_addr;   // temp
 
-    cur_y_addr = REG32_VAL(REG_VID_Y0_SA);
-    cur_c_addr = REG32_VAL(REG_VID_C0_SA);
+	TRACE("Enter\n");
 
-    if( (y_addr != cur_y_addr) || (c_addr != cur_c_addr)) {
-        VID_REG_SET32( REG_VID_Y0_SA, y_addr ); /* VID Y FB address */
-        VID_REG_SET32( REG_VID_C0_SA, c_addr ); /* VID C FB address */
-    }
-    TRACE("Leave\n");
+	cur_y_addr = REG32_VAL(REG_VID_Y0_SA);
+	cur_c_addr = REG32_VAL(REG_VID_C0_SA);
 
-    return 0;
-} /* End of wmt_vid_set_addr() */
+	if ((y_addr != cur_y_addr) || (c_addr != cur_c_addr)) {
+		VID_REG_SET32( REG_VID_Y0_SA, y_addr); /* VID Y FB address */
+		VID_REG_SET32( REG_VID_C0_SA, c_addr); /* VID C FB address */
+	}
 
-/*!*************************************************************************
-* wmt_vid_open
-* 
-*/
-/*!
-* \brief
-*       init CMOS module
-* \retval  0 if success
-*/ 
+	TRACE("Leave\n");
+	return 0;
+}
 
 int wmt_vid_open(vid_mode mode, cmos_uboot_env_t *uboot_env)
 {
-    int value, int_ctrl;
-    TRACE("Enter\n");
+	int value, int_ctrl;
+	TRACE("Enter\n");
 
-        vid_i2c_gpio_en = uboot_env->i2c_gpio_en;
+	//vid_i2c_gpio_en = uboot_env->i2c_gpio_en;
 	DBG_INFO(" vid_i2c_gpio_en 0x%08x \n",vid_i2c_gpio_en);
 	if ((vid_i2c_gpio_en) && (uboot_env != NULL))
 	{
 		memset(&vid_i2c0_scl, 0, sizeof(vid_i2c0_scl));
 		memset(&vid_i2c0_sda, 0, sizeof(vid_i2c0_sda));
-		
+
 		vid_i2c0_scl.bit_mask = 1 << uboot_env->i2c_gpio_scl_binum;
 		vid_i2c0_scl.pull_en_bit_mask = 1 << uboot_env->reg_i2c_gpio_scl_gpio_pe_bitnum;
 
@@ -834,8 +699,7 @@ int wmt_vid_open(vid_mode mode, cmos_uboot_env_t *uboot_env)
 		vid_i2c0_sda.data_out = uboot_env->reg_i2c_gpio_sda_gpio_oc ;
 		vid_i2c0_sda.pull_en = uboot_env->reg_i2c_gpio_sda_gpio_pe ;
 
-		if (vid_i2c0_scl.data_in & 0x1)
-		{
+		if (vid_i2c0_scl.data_in & 0x1) {
 			vid_i2c0_scl.bit_mask <<= 8;
 			vid_i2c0_scl.pull_en_bit_mask <<= 8;
 			vid_i2c0_scl.data_in -= 1;
@@ -845,8 +709,7 @@ int wmt_vid_open(vid_mode mode, cmos_uboot_env_t *uboot_env)
 			vid_i2c0_scl.pull_en -= 1;
 
 		}
-		if (vid_i2c0_sda.data_in & 0x1)
-		{
+		if (vid_i2c0_sda.data_in & 0x1) {
 			vid_i2c0_sda.bit_mask <<= 8;
 			vid_i2c0_sda.pull_en_bit_mask <<= 8;
 			vid_i2c0_sda.data_in -= 1;
@@ -854,93 +717,87 @@ int wmt_vid_open(vid_mode mode, cmos_uboot_env_t *uboot_env)
 			vid_i2c0_sda.out_en -= 1;
 			vid_i2c0_sda.data_out -= 1;
 			vid_i2c0_sda.pull_en -= 1;
-
 		}
-
 
 		vid_swi2c.scl_reg = &vid_i2c0_scl;
 		vid_swi2c.sda_reg = &vid_i2c0_sda;
-		DBG_INFO("SCL 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x \n",vid_i2c0_scl.bit_mask,vid_i2c0_scl.pull_en_bit_mask,vid_i2c0_scl.data_in,vid_i2c0_scl.gpio_en,vid_i2c0_scl.out_en,vid_i2c0_scl.data_out, vid_i2c0_scl.pull_en);
-		DBG_INFO("SDA 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x \n",vid_i2c0_sda.bit_mask,vid_i2c0_sda.pull_en_bit_mask,vid_i2c0_sda.data_in,vid_i2c0_sda.gpio_en,vid_i2c0_sda.out_en,vid_i2c0_sda.data_out, vid_i2c0_sda.pull_en );
+
+		DBG_INFO("SCL 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x \n",
+			 vid_i2c0_scl.bit_mask, vid_i2c0_scl.pull_en_bit_mask,
+			 vid_i2c0_scl.data_in, vid_i2c0_scl.gpio_en,
+			 vid_i2c0_scl.out_en, vid_i2c0_scl.data_out,
+			 vid_i2c0_scl.pull_en);
+		DBG_INFO("SDA 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x \n",
+			 vid_i2c0_sda.bit_mask, vid_i2c0_sda.pull_en_bit_mask,
+			 vid_i2c0_sda.data_in, vid_i2c0_sda.gpio_en,
+			 vid_i2c0_sda.out_en, vid_i2c0_sda.data_out,
+			 vid_i2c0_sda.pull_en);
+	}
+
+	/*--------------------------------------------------------------------------
+	  Step 1: Init GPIO for CMOS or TVDEC mode
+	  --------------------------------------------------------------------------*/
+	vid_gpio_init(mode);
+
+	/*--------------------------------------------------------------------------
+	  Step 2: Init CMOS or TVDEC module
+	  --------------------------------------------------------------------------*/
+	value = REG32_VAL(REG_VID_TVDEC_CTRL);
+	VID_REG_SET32( REG_VID_MEMIF_EN, 0x1 );
+	VID_REG_SET32( REG_VID_OUTPUT_FORMAT, 0x0 );  // 0: 422   1: 444
+
+	int_ctrl = 0x00;
+	if (mode == VID_MODE_CMOS) {
+		VID_REG_SET32( REG_VID_TVDEC_CTRL, (value & 0xFFFFFFE)); /* disable TV decoder */
+		VID_REG_SET32( REG_VID_CMOS_PIXEL_SWAP, 0x2);    /* 0x2 for YUYV */
+#ifdef VID_INT_MODE
+		int_ctrl = 0x0808;
+#endif
+		VID_REG_SET32( REG_VID_INT_CTRL, int_ctrl );
+
+	}
+	else {
+		VID_REG_SET32( REG_VID_TVDEC_CTRL, (value | 0x1) );	/* enable TV decoder */
+#ifdef VID_INT_MODE
+		int_ctrl = 0x0404;
+#endif
+		VID_REG_SET32( REG_VID_INT_CTRL, int_ctrl );
+		VID_REG_SET32( REG_VID_CMOS_EN, 0x0);	/* disable CMOS */
+		wmt_vid_set_common_mode(VID_NTSC);
 
 	}
 
-	
+	_cur_fb  = 0;
+	_prev_fb = 0;
 
-    /*--------------------------------------------------------------------------
-        Step 1: Init GPIO for CMOS or TVDEC mode
-    --------------------------------------------------------------------------*/
-    vid_gpio_init(mode);
+	spin_lock_init(&vid_lock);
 
-    /*--------------------------------------------------------------------------
-        Step 2: Init CMOS or TVDEC module
-    --------------------------------------------------------------------------*/
-    value = REG32_VAL(REG_VID_TVDEC_CTRL);
-    VID_REG_SET32( REG_VID_MEMIF_EN, 0x1 );
-    VID_REG_SET32( REG_VID_OUTPUT_FORMAT, 0x0 );  // 0: 422   1: 444
+	TRACE("Leave\n");
 
-    int_ctrl = 0x00;
-    if(mode == VID_MODE_CMOS) {
-        VID_REG_SET32( REG_VID_TVDEC_CTRL, (value & 0xFFFFFFE)); /* disable TV decoder */
-        VID_REG_SET32( REG_VID_CMOS_PIXEL_SWAP, 0x2);    /* 0x2 for YUYV */
-  #ifdef VID_INT_MODE
-        int_ctrl = 0x0808;
-  #endif
-        VID_REG_SET32( REG_VID_INT_CTRL, int_ctrl );
+	return 0;
+}
 
-    }
-    else {
-        VID_REG_SET32( REG_VID_TVDEC_CTRL, (value | 0x1) );	/* enable TV decoder */
-  #ifdef VID_INT_MODE
-        int_ctrl = 0x0404;
-  #endif
-        VID_REG_SET32( REG_VID_INT_CTRL, int_ctrl );
-        VID_REG_SET32( REG_VID_CMOS_EN, 0x0);	/* disable CMOS */
-        wmt_vid_set_common_mode(VID_NTSC);
-
-    }
-    cur_y_addr = 0;
-    cur_c_addr = 0;
-    
-    _cur_fb  = 0;
-    _prev_fb = 0;
-
-    spin_lock_init(&vid_lock);
-
-    TRACE("Leave\n");
-
-    return 0;
-} /* End of wmt_vid_open() */
-
-/*!*************************************************************************
-* wmt_vid_close
-* 
-*/
-/*!
-* \brief
-*       release CMOS module
-* \retval  0 if success
-*/ 
 int wmt_vid_close(vid_mode mode)
 {
-    TRACE("Enter\n");
+	TRACE("Enter\n");
 
-    auto_pll_divisor(DEV_VID, CLK_DISABLE, 0, 0);
-    auto_pll_divisor(DEV_C24MOUT, CLK_DISABLE, 0, 0);
+	auto_pll_divisor(DEV_VID, CLK_DISABLE, 0, 0); 
+	auto_pll_divisor(DEV_C24MOUT, CLK_DISABLE, 0, 0); 
 
-    GPIO_CTRL_GP17_I2C_BYTE_VAL |= BIT6;//24Mhz off , set to GPIO
+	GPIO_CTRL_GP17_I2C_BYTE_VAL |= BIT6;//24Mhz off , set to GPIO
 
-    if(mode == VID_MODE_CMOS) {
-        VID_REG_SET32( REG_VID_CMOS_EN, 0x0);	/* disable CMOS */
-    }
-    else {
-        int value = REG32_VAL(REG_VID_TVDEC_CTRL);
-        VID_REG_SET32( REG_VID_TVDEC_CTRL, (value & 0xFFFFFFE)); /* disable TV decoder */
-    }
-    TRACE("Leave\n");
+	if(mode == VID_MODE_CMOS) {
+		VID_REG_SET32( REG_VID_CMOS_EN, 0x0);	/* disable CMOS */
+	}
+	else {
+		int value = REG32_VAL(REG_VID_TVDEC_CTRL);
+		VID_REG_SET32( REG_VID_TVDEC_CTRL, (value & 0xFFFFFFE)); /* disable TV decoder */
+	}
+	TRACE("Leave\n");
 
-    return 0;
-} /* End of wmt_vid_close() */
+	return 0;
+}
+
 EXPORT_SYMBOL(wmt_vid_set_mode);
 EXPORT_SYMBOL(wmt_vid_i2c_write);
 EXPORT_SYMBOL(wmt_vid_i2c_read);
@@ -961,11 +818,3 @@ MODULE_AUTHOR("WonderMedia SW Team Max Chen");
 MODULE_DESCRIPTION("wmt-vid  driver");
 MODULE_LICENSE("GPL");
 
-
-/*--------------------End of Function Body -----------------------------------*/
-#undef DBG_MSG
-#undef DBG_DETAIL
-#undef TRACE
-#undef DBG_ERR
-
-#undef WMT_VID_C

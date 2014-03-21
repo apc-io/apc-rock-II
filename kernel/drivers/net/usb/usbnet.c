@@ -93,6 +93,45 @@ MODULE_PARM_DESC (msg_level, "Override default message level");
 
 /*-------------------------------------------------------------------------*/
 
+
+//add by kevin 
+extern int wmt_getsyspara(const char *varname, char *varval, int * varlen);
+static unsigned char char2hex(char c){
+	unsigned char ret=0xff;
+	if(c>='0'&&c<='9')
+		ret= c-'0';
+	if(c>='a'&&c<='f')
+		ret=  c-'a'+10;
+	if(c>='A'&&c<='F')
+		ret=  c-'A'+10;
+	return ret;
+}
+
+void check_set_mac(unsigned char *buf){
+
+	char ethbuf[50];
+	int  len = sizeof(ethbuf);
+	memset((void*)ethbuf, 0, len);	
+    
+	//wondermedia set bt mac addr
+	if(!wmt_getsyspara("ethaddr", ethbuf, &len)){
+
+       	printk("wmt eth addr %s %d\n",ethbuf,strlen(ethbuf));
+        //ethaddr=00:40:63:70:13:37
+		if(strlen(ethbuf)==17){
+			buf[0] = (char2hex(ethbuf[0])<<4)|char2hex(ethbuf[1]);
+			buf[1] = (char2hex(ethbuf[3])<<4)|char2hex(ethbuf[4]);
+			buf[2] = (char2hex(ethbuf[6])<<4)|char2hex(ethbuf[7]);
+			buf[3] = (char2hex(ethbuf[9])<<4)|char2hex(ethbuf[10]);
+			buf[4] = (char2hex(ethbuf[12])<<4)|char2hex(ethbuf[13]);
+			buf[5] = (char2hex(ethbuf[15])<<4)|char2hex(ethbuf[16]);
+			
+		}
+		
+	}
+}
+
+
 /* handles CDC Ethernet and many other network "bulk data" interfaces */
 int usbnet_get_endpoints(struct usbnet *dev, struct usb_interface *intf)
 {
@@ -1365,6 +1404,21 @@ usbnet_probe (struct usb_interface *udev, const struct usb_device_id *prod)
 	usb_get_dev (xdev);
 
 	status = -ENOMEM;
+
+
+ 
+{
+	char buf[256];
+	int varlen = 256;	
+    int disable = 0;
+	if( wmt_getsyspara("wmt.cdc.disable",buf,&varlen) == 0) 
+	{
+		sscanf(buf,"%d",&disable);
+        if(disable>0)
+            goto out;
+
+    }
+}
 
 	// set up our own records
 	net = alloc_etherdev(sizeof(*dev));

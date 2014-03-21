@@ -245,8 +245,8 @@ void ubifs_scanned_corruption(const struct ubifs_info *c, int lnum, int offs,
 	len = c->leb_size - offs;
 	if (len > 8192)
 		len = 8192;
-	dbg_err("first %d bytes from LEB %d:%d", len, lnum, offs);
-	print_hex_dump(KERN_DEBUG, "", DUMP_PREFIX_OFFSET, 32, 4, buf, len, 1);
+	printk("\nfirst %d bytes from LEB %d:%d", len, lnum, offs);
+	print_hex_dump(KERN_NOTICE, "", DUMP_PREFIX_OFFSET, 32, 4, buf, len, 1);
 }
 
 /**

@@ -665,8 +665,8 @@ int vpp_common_ioctl(unsigned int cmd, unsigned long arg)
 			sizeof(vpp_mod_fbinfo_t));
 
 		if (g_vpp.virtual_display)
-			parm.mod = (hdmi_get_plugin()) ?
-				VPP_MOD_GOVRH : VPP_MOD_GOVRH2;
+			   parm.mod = (hdmi_get_plugin()) ?
+				      VPP_MOD_GOVRH : VPP_MOD_GOVRH2;
 		mod_fb_p = vpp_mod_get_fb_base(parm.mod);
 		if (!mod_fb_p)
 			break;
@@ -687,12 +687,18 @@ int vpp_common_ioctl(unsigned int cmd, unsigned long arg)
 		} else {
 			mod_fb_p->fb = parm.fb;
 			mod_fb_p->set_framebuf(&parm.fb);
-			
+
 			if (g_vpp.virtual_display) {
 #ifdef CONFIG_VPP_STREAM_CAPTURE
 				if (g_vpp.stream_enable)
 					vpp_mb_scale_bitblit(&mod_fb_p->fb);
+				else
 #endif
+				{
+					if(g_vpp.mb[0] != 0)
+						vpp_free_framebuffer();
+				}
+
 				if (vpp_check_dbg_level(VPP_DBGLVL_FPS))
 					vpp_dbg_timer(
 						&vout_info[1].pandisp_timer,
@@ -773,7 +779,7 @@ int vpp_common_ioctl(unsigned int cmd, unsigned long arg)
 		}
 #endif
 		{
-#if 0		
+#if 0
 		vpp_int_t type;
 
 		type = (vout_info[0].govr_mod == VPP_MOD_GOVRH) ?
@@ -802,7 +808,7 @@ int vpp_common_ioctl(unsigned int cmd, unsigned long arg)
 		fb = vout_info[1].fb;
 #else
 #ifdef CONFIG_VPP_STREAM_FIX_RESOLUTION
-		fb = g_vpp.stream_fb;		
+		fb = g_vpp.stream_fb;
 #else
 		fb = vout_info[0].fb;
 #endif
@@ -1177,6 +1183,31 @@ label_get_info:
 vout_vmode_end:
 #endif
 #endif
+		if(parm.num == 0) { /* if no EDID*/
+			if(g_vpp.virtual_display || (g_vpp.dual_display == 0)) {
+				if(mode == VPP_VOUT_DVI) {
+					char buf[40] = {0};
+					int varlen = 40;
+
+					if(wmt_getsyspara("wmt.display.tvformat", buf, &varlen) == 0) {
+						if(!strnicmp(buf, "PAL", 3) || !strnicmp(buf, "NTSC", 4)) {
+							parm.parm[0].resx = 720;
+							parm.parm[0].resy = 576;
+							parm.parm[0].fps = 50;
+							parm.parm[0].option = 0;
+
+							parm.parm[1].resx = 720;
+							parm.parm[1].resy = 480;
+							parm.parm[1].fps = 60;
+							parm.parm[1].option = 0;
+
+							parm.num = 2;
+						}
+					}
+				}
+			}
+		}
+
 		DBG_MSG("[VPP] get support vmode %d\n", parm.num);
 		copy_to_user((void *)arg, (const void *) &parm,
 			sizeof(vpp_vout_vmode_t));
@@ -1414,6 +1445,7 @@ int vpp_ioctl(unsigned int cmd, unsigned long arg)
 {
 	int retval = 0;
 	int err = 0;
+	int skip_mutex = 0;
 
 /*	DBGMSG("vpp_ioctl\n"); */
 	switch (_IOC_TYPE(cmd)) {
@@ -1447,7 +1479,21 @@ int vpp_ioctl(unsigned int cmd, unsigned long arg)
 		}
 	}
 
+	switch (cmd) {
+	case VPPIO_STREAM_GETFB: /* block mode should wait vsync */
+		skip_mutex = 1;
+		break;
+	default:
+		/* scale should wait complete */
+		if ((_IOC_NR(cmd) >= VPPIO_SCL_BASE) &&
+			(_IOC_NR(cmd) < VPPIO_MAX))
+			skip_mutex = 1;
+		break;
+	}
+
+	if (!skip_mutex)
 	vpp_set_mutex(1, 1);
+
 	switch (_IOC_NR(cmd)) {
 	case VPPIO_VPP_BASE ... (VPPIO_VOUT_BASE-1):
 		/* DBGMSG("VPP command ioctl\n"); */
@@ -1463,15 +1509,15 @@ int vpp_ioctl(unsigned int cmd, unsigned long arg)
 		break;
 	case VPPIO_SCL_BASE ... (VPPIO_MAX-1):
 		/* DBGMSG("SCL ioctl\n"); */
-		vpp_set_mutex(1, 0);
 		retval = scl_ioctl(cmd, arg);
-		vpp_set_mutex(1, 1);
 		break;
 	default:
 		retval = -ENOTTY;
 		break;
 	}
-	vpp_set_mutex(1, 0);
+
+	if (!skip_mutex)
+		vpp_set_mutex(1, 0);
 
 	if (vpp_check_dbg_level(VPP_DBGLVL_IOCTL)) {
 		switch (cmd) {
@@ -1505,17 +1551,24 @@ int vpp_set_blank(struct fb_info *info, int blank)
 		vout_unblank_mask = vout_get_mask(vo_info);
 
 	if (g_vpp.virtual_display || (g_vpp.dual_display == 0)) {
-		int plugin;
+		if (blank) {
+			vout_blank_mask = ~0;
+			vout_unblank_mask = 0;
+		} else {
+			int plugin;
 
-		plugin = vout_chkplug(VPP_VOUT_NUM_HDMI);
-		vout_blank_mask &= ~((0x1 << VPP_VOUT_NUM_DVI) +
-			(0x1 << VPP_VOUT_NUM_HDMI));
-		vout_unblank_mask &= ~((0x1 << VPP_VOUT_NUM_DVI) +
-			(0x1 << VPP_VOUT_NUM_HDMI));
-		vout_blank_mask |= (plugin) ? (0x1 << VPP_VOUT_NUM_DVI) :
-			(0x1 << VPP_VOUT_NUM_HDMI);
-		vout_unblank_mask |= (plugin) ? (0x1 << VPP_VOUT_NUM_HDMI) :
-			(0x1 << VPP_VOUT_NUM_DVI);
+			plugin = vout_chkplug(VPP_VOUT_NUM_HDMI);
+			vout_blank_mask &= ~((0x1 << VPP_VOUT_NUM_DVI) +
+				(0x1 << VPP_VOUT_NUM_HDMI));
+			vout_unblank_mask &= ~((0x1 << VPP_VOUT_NUM_DVI) +
+				(0x1 << VPP_VOUT_NUM_HDMI));
+			vout_blank_mask |= (plugin) ?
+				(0x1 << VPP_VOUT_NUM_DVI) :
+				(0x1 << VPP_VOUT_NUM_HDMI);
+			vout_unblank_mask |= (plugin) ?
+				(0x1 << VPP_VOUT_NUM_HDMI) :
+				(0x1 << VPP_VOUT_NUM_DVI);
+		}
 	}
 	vout_set_blank(vout_blank_mask, 1);
 	vout_set_blank(vout_unblank_mask, 0);
@@ -1626,7 +1679,6 @@ int vpp_dev_init(void)
 	vpp_irqproc_init();
 	vpp_netlink_init();
 	vpp_init();
-
 #ifdef CONFIG_VPP_PROC
 	/* init system proc */
 	if (vpp_proc_dir == 0) {
@@ -1729,6 +1781,7 @@ void vpp_get_info(int fbn, struct fb_var_screeninfo *var)
 {
 	static int vpp_init_flag = 1;
 	vout_info_t *info;
+	govrh_mod_t *govr;
 
 	if (vpp_init_flag) {
 #if 0
@@ -1746,11 +1799,12 @@ void vpp_get_info(int fbn, struct fb_var_screeninfo *var)
 	}
 
 	info = vout_info_get_entry(fbn);
-	if (info->govr) {
+	govr = vout_info_get_govr(fbn);
+	if (govr) {
 		struct fb_videomode vmode;
 
-		govrh_get_framebuffer(info->govr, &info->fb);
-		govrh_get_videomode(info->govr, &vmode);
+		govrh_get_framebuffer(govr, &info->fb);
+		govrh_get_videomode(govr, &vmode);
 		fb_videomode_to_var(var, &vmode);
 	} else {
 		var->pixclock =
@@ -1848,40 +1902,62 @@ void vpp_var_to_fb(struct fb_var_screeninfo *var,
 int vpp_pan_display(struct fb_var_screeninfo *var, struct fb_info *info)
 {
 	vout_info_t *vo_info;
+	vdo_framebuf_t *uboot_fb = 0;
 
 	if (g_vpp.hdmi_certify_flag)
 		return 0;
 
-	if (wmtfb_fb1_probe == 0)
-		return 0;
-
 	vo_info = vout_info_get_entry((info) ? info->node : 0);
 
-	DBG_DETAIL("fb %d,govr %d\n", (info) ? info->node : 0,
-		vo_info->govr->mod);
+	DBG_DETAIL("fb %d\n", (info) ? info->node : 0);
+
+	if (wmtfb_fb1_probe == 0) {
+		uboot_fb = kmalloc(sizeof(vdo_framebuf_t), GFP_KERNEL);
+		*uboot_fb = vo_info->fb;
+		uboot_fb->img_h = g_vpp.govrh_init_yres;
+	}
 
 	vpp_var_to_fb(var, info, &vo_info->fb);
+
+	if (uboot_fb) {
+		DMSG("uboot copy fb%d\n", info->node);
+		p_scl->scale_sync = 1;
+		vpp_set_recursive_scale(uboot_fb, &vo_info->fb);
+		kfree(uboot_fb);
+	}
+
+	/* for 8:1:0 mode change resolution garbage frame */
+	if ((g_vpp.virtual_display_mode == 1) && (info->node == 1)) {
+		vdo_framebuf_t fb;
+
+		govrh_get_framebuffer(p_govrh, &fb);
+		vo_info->fb.y_addr = fb.y_addr;
+		vo_info->fb.c_addr = 0;
+	}
 	vout_set_framebuffer(vout_get_mask(vo_info), &vo_info->fb);
 
 	if (g_vpp.fb0_bitblit) {
 		vdo_framebuf_t src, dst;
+		struct fb_videomode vmode;
+		govrh_mod_t *govr;
 
-		info = vout_info_get_entry(1);
-		g_vpp.stream_mb_index = (g_vpp.stream_mb_index) ? 0 : 1;
-		p_scl->scale_sync = 1;
 		src = vo_info->fb;
-		govrh_get_framebuffer(p_govrh, &dst);
-		dst.fb_w = vpp_calc_align(dst.fb_w, 64);
+		govr = vout_info_get_govr(1);
+		p_scl->scale_sync = 1;
+		govrh_get_framebuffer(govr, &dst);
+		govrh_get_videomode(govr, &vmode);
+		dst.img_w = vmode.xres;
+		dst.fb_w = vpp_calc_fb_width(dst.col_fmt, dst.img_w);
+		dst.img_h = vmode.yres;
+		dst.fb_h = vmode.yres;
 		dst.y_size = dst.fb_w * dst.img_h * dst.bpp / 8;
 #ifdef CONFIG_VPP_DYNAMIC_ALLOC
-		if (g_vpp.mb[0] == 0) {
+		if (g_vpp.mb[0] == 0)
 			vpp_alloc_framebuffer(dst.img_w, dst.img_h);
-		}
 #endif
+		g_vpp.stream_mb_index = (g_vpp.stream_mb_index) ? 0 : 1;
 		dst.y_addr = g_vpp.mb[0] + (dst.y_size * g_vpp.stream_mb_index);
 		dst.c_addr = 0;
-//		MSG("fb0 bitblit Y 0x%x,C 0x%x,(%dx%d)\n",
-//			dst.y_addr, dst.c_addr, dst.fb_w, dst.img_h);
 		vpp_set_recursive_scale(&src, &dst);
 		vout_set_framebuffer(VPP_VOUT_ALL, &dst);
 	}
@@ -1959,22 +2035,29 @@ int vpp_set_par(struct fb_info *info)
 		govrh_mod_t *govr;
 		unsigned int cur_pixclk, new_pixclk;
 
-		if (g_vpp.virtual_display)
-			govr = (vout_chkplug(VPP_VOUT_NUM_HDMI)) ?
-				p_govrh : p_govrh2;
-		else
-			govr = vo_info->govr;
+		govr = vout_info_get_govr(info->node);
 		fb_var_to_videomode(&var, &info->var);
+        	if(g_vpp.virtual_display) {
+    			if (vout_find_match_mode(info->node, &var, 1)) {
+    				DPRINT("[wmtfb] not support\n");
+				vpp_set_mutex(info->node, 0);
+    				return -1;
+    			}
+    			fb_videomode_to_var(&info->var, &var);
+            		var.flag = FB_MODE_IS_FROM_VAR;
+        	}
 		govrh_get_videomode(govr, &cur);
-		/* diff less then 500K */
+		if ((cur.xres == var.xres) && (cur.yres == var.yres)) {
+		/* diff less than 500K */
 		cur_pixclk = PICOS2KHZ(cur.pixclock);
 		new_pixclk = PICOS2KHZ(var.pixclock);
 		if (abs(new_pixclk - cur_pixclk) < 500) {
 			var.pixclock = cur.pixclock;
 			var.refresh = cur.refresh;
 		}
-		if (abs(var.refresh - cur.refresh) <= 2) /* diff less then 2 */
+		if (abs(var.refresh - cur.refresh) <= 2) /* diff less than 2 */
 			var.refresh = cur.refresh;
+		}
 		if (memcmp(&var, &cur, sizeof(struct fb_videomode))) {
 #ifdef DEBUG
 			DPRINT("[wmtfb] set_par %d: set timing\n", info->node);
@@ -2027,15 +2110,26 @@ int wmtfb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 				g_vpp.mb_colfmt = (var->bits_per_pixel == 16) ?
 					VDO_COL_FMT_RGB_565 : VDO_COL_FMT_ARGB;
 			}
-			if (g_vpp.alloc_framebuf(var->xres, var->yres))
-				return -ENOMEM;
-			info->fix.smem_start = g_vpp.mb[0];
-			info->fix.smem_len =
-				g_vpp.mb_fb_size * VPP_MB_ALLOC_NUM;
-			info->screen_base =
-				mb_phys_to_virt(info->fix.smem_start);
+			if (g_vpp.virtual_display_mode == 1) {
+#ifdef CONFIG_VPP_DYNAMIC_ALLOC
+				vpp_free_framebuffer();
+#endif
+			} else {
+				if (g_vpp.alloc_framebuf(var->xres, var->yres))
+					return -ENOMEM;
+
+				info->fix.smem_start = g_vpp.mb[0];
+				info->fix.smem_len =
+					g_vpp.mb_fb_size * VPP_MB_ALLOC_NUM;
+				info->screen_base =
+					mb_phys_to_virt(info->fix.smem_start);
+			}
 		}
 	}
+
+	if ((var->xres == 0) || (var->yres == 0))
+		return -1;
+
 	temp = (info->fix.smem_len /
 		(var->xres_virtual * var->yres * (var->bits_per_pixel >> 3)));
 	if (temp < 2) {
@@ -2500,11 +2594,13 @@ static int wmtfb_suspend
 #ifdef WMT_FTBLK_LVDS
 	lvds_suspend(2);
 #endif
+#if 0
 	if (lcd_get_lvds_id() == LCD_LVDS_1024x600) {
 		mdelay(5);
 		/* GPIO10 off  8ms -> clock -> off */
 		REG32_VAL(GPIO_BASE_ADDR + 0xC0) &= ~0x400;
 	}
+#endif
 	return 0;
 } /* End of wmtfb_suspend */
 
@@ -2552,7 +2648,8 @@ static int wmtfb_resume
 	hdmi_resume(1);
 #endif
 	/* wait */
-	msleep(150);
+	if(!(g_vpp.virtual_display || g_vpp.dual_display == 0))
+		msleep(150);
 
 	/* enable module */
 	for (i = 0; i < VPP_MOD_MAX; i++) {
@@ -2563,16 +2660,18 @@ static int wmtfb_resume
 #ifdef WMT_FTBLK_LVDS
 	lvds_resume(2);
 #endif
-#ifdef WMT_FTBLK_HDMI
-	hdmi_resume(2);
-#endif
 	if (lcd_get_lvds_id() != LCD_LVDS_1024x600)
 		vout_set_blank(vpp_vout_blank_mask, VOUT_BLANK_UNBLANK);
 	wmt_resume_mmfreq();
 	if (vout_check_plugin(0))
 		vpp_netlink_notify_plug(VPP_VOUT_ALL, 1);
-	else
+	else {
 		wmt_set_mmfreq(0);
+	}
+
+#ifdef WMT_FTBLK_HDMI
+	hdmi_resume(2);
+#endif
 	return 0;
 } /* End of wmtfb_resume */
 

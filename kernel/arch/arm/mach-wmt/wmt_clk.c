@@ -273,12 +273,23 @@ void wmt_mc5_autotune(void)//gri
 	wmb();
 	MC_CLOCK_CTRL0_VAL = 0x80000000;
 	while(MC_CLOCK_CTRL0_VAL != 0xC0000000);
-	reg_val = (MC_CLOCK_CTRL1_VAL & 0xffff8080);
-	reg_tmp = (0x7f0000 & reg_val);
-	reg_tmp |= ((0x7f0000 & reg_val) >> 8);
-	reg_tmp |= ((0x7f0000 & reg_val) >> 16);
-	reg_val |= reg_tmp;
-	MC_CLOCK_CTRL1_VAL = reg_val;
+	if ((MC_CONF_VAL & 0x3) == 0x2) {
+		//ddr3
+		reg_val = (MC_CLOCK_CTRL1_VAL & 0xffff8080);
+		reg_tmp = (0x7f0000 & reg_val);
+		reg_tmp |= ((0x7f0000 & reg_val) >> 8);
+		reg_tmp |= ((0x7f0000 & reg_val) >> 16);
+		reg_val |= reg_tmp;
+		MC_CLOCK_CTRL1_VAL = reg_val;
+	} else {
+		//lpddr2
+		reg_val = (MC_CLOCK_CTRL1_VAL & 0xffff0000);
+		reg_tmp = (0x7f000000 & reg_val);
+		reg_tmp |= ((0x7f000000 & reg_val) >> 16);
+		reg_tmp |= ((0x7f000000 & reg_val) >> 24);
+		reg_val |= reg_tmp;
+		MC_CLOCK_CTRL1_VAL = reg_val;	
+	}
 }
 
 void wmt_clk_mutex_lock(int lock)
@@ -1360,6 +1371,86 @@ find:
 	return set_freq;
 }
 
+static int get_freq_timer(enum dev_id dev, int *divisor) {
+
+	unsigned int div = 0, freq = 0, div_ahb = 1;
+	int PLL_NO, i, j = 0, div_addr_offs;
+	unsigned long long freq_llu = 0, base = 1000000, tmp, mod;
+	#ifdef DEBUG_CLK
+	unsigned int t1 = 0, t2 = 0;
+	#endif
+
+	if (dev == DEV_APB) {
+		PLL_NO = calc_pll_num(DEV_AHB, &div_addr_offs);
+		if (PLL_NO < 0) {
+			printk(KERN_INFO"device not found");
+			return -1;
+		}
+		div_ahb = *(volatile unsigned char *)(PMC_BASE + div_addr_offs);
+	}
+
+	PLL_NO = calc_pll_num(dev, &div_addr_offs);
+	if (PLL_NO == -1) {
+		printk(KERN_INFO"device not found");
+		return -1;
+	}
+
+	if (PLL_NO == -2)
+		return div_addr_offs*1000000;
+
+	*(volatile unsigned char *)(PMC_BASE + div_addr_offs + 2) = (dev == DEV_SDTV) ? 1 : 0;
+
+	check_PLL_DIV_busy();
+
+	div = *divisor = *(volatile unsigned char *)(PMC_BASE + div_addr_offs);
+
+	if ((dev != DEV_SDMMC0) && (dev != DEV_SDMMC1) && (dev != DEV_SDMMC2)) {
+		div = div&0x1F;
+	} else {
+		if (div & (1<<5))
+			j = 1;
+		div &= 0x1F;
+		div = div*(j?64:1)*2;
+	}
+
+	#ifdef DEBUG_CLK
+	printk(KERN_INFO"div_addr_offs=0x%x PLL_NO=%d PMC_PLL=0x%x\n", div_addr_offs, PLL_NO, PMC_PLL);
+	t1 = wmt_read_oscr();
+	#endif
+	//mutex_lock(&clk_cnt_lock);
+	tmp = *(volatile unsigned int *)(PMC_PLL + 4*PLL_NO);
+	//mutex_unlock(&clk_cnt_lock);
+	for (i = 0; i < ARRAYSIZE(pllmapAll); i++) {
+		if (pllmapAll[i].pll == tmp) {
+			freq = pllmapAll[i].freq;
+			#ifdef DEBUG_CLK
+			printk("********dev%d---PLL_NO=%X---get freq=%d set0x%x\n",	dev, PLL_NO+10, freq, pllmapAll[i].pll);
+			#endif
+			break;
+		}
+	}
+	if (i >= ARRAYSIZE(pllmapAll) || freq == 0) {
+		printk(KERN_INFO"gfreq : dev%d********************pll not match table**************\n", dev);
+		freq_llu = (SRC_FREQ*GET_DIVF(tmp)) * base;
+		//printk(KERN_INFO" freq_llu =%llu\n", freq_llu);
+		tmp = GET_DIVR(tmp) * GET_DIVQ(tmp) * div * div_ahb;
+		mod = do_div(freq_llu, tmp);
+		freq = (unsigned int)freq_llu;
+	} else {
+		freq = (freq * 15625)<<6;
+		freq = freq/(div*div_ahb);
+	}
+
+	#ifdef DEBUG_CLK
+	t2 = wmt_read_oscr() - t1;
+	printk("************delay_time=%d\n", t2);
+	printk("get_freq cmd: freq=%d freq(unsigned long long)=%llu div=%llu mod=%llu\n",
+	freq, freq_llu, tmp, mod);
+	#endif
+
+	return freq;
+}
+
 /*
 * cmd : CLK_DISABLE  : disable clock,
 *       CLK_ENABLE   : enable clock,
@@ -1476,6 +1567,9 @@ int auto_pll_divisor(enum dev_id dev, enum clk_cmd cmd, int unit, int freq)
 			#endif
 			/*t3 = wmt_read_oscr() - t1;
 			printk("******************SPD t3=%d tt2=%d min=%d\n", t3, t2, last_freq - last_freq1);*/
+			return last_freq;
+		case GET_CPUTIMER:
+			last_freq = get_freq_timer(dev, &divisor);
 			return last_freq;
 		default:
 		printk(KERN_INFO"clock cmd unknow");
@@ -2180,12 +2274,17 @@ void wmt_do_mmfreq(struct work_struct *ptr)
 	}
 #endif
 	mmfreq_cur_num = num;
+	printk("vol %d,mali %d,vpp %d,vdu %d,vduna %d,cmn %d,cmnna %d,end wmt_do_mmfreq\n",
+		div_table[num][0], div_table[num][1],
+		div_table[num][2], div_table[num][3],
+		div_table[num][4], div_table[num][5],
+		div_table[num][6]);
 }
 
 void wmt_set_mmfreq(int num)
 {
 	(*(volatile unsigned int *)(MEMORY_CTRL_V4_CFG_BASE_ADDR + 0x08)) =
-		(num) ? 0x00fa0000 : mc5_08_default;
+		(num) ? 0x00f80000 : mc5_08_default;
 	(*(volatile unsigned int *)(MEMORY_CTRL_V4_CFG_BASE_ADDR + 0x18)) =
 		(num) ? 0x00fa0000 : mc5_18_default;
 	(*(volatile unsigned int *)(MEMORY_CTRL_V4_CFG_BASE_ADDR + 0x20)) =

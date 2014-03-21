@@ -441,20 +441,20 @@ env_end:
 			strcat(buf, "-normal");
 		printk(KERN_EMERG "boot-method = %s\n", buf);
 		*/
-		if (strcmp(cmd, "normal") == 0) {
-			p = strstr((char *)buf, "recovery");
-			if (p == NULL)
-				goto NO_SET_ENV;
-			if (strcmp(p, "recovery") == 0)
-				searched = 2;
-		} else if (strcmp(cmd, "recovery") == 0) {
+		
+		if (strcmp(cmd, "recovery") == 0) {
 			p = strstr((char *)buf, "normal");
 			if (p == NULL)
 				goto NO_SET_ENV;
 			if (strcmp(p, "normal") == 0)
 				searched = 1;
-		} else
-			goto NO_SET_ENV;
+		} else {
+			p = strstr((char *)buf, "recovery");
+			if (p == NULL)
+				goto NO_SET_ENV;
+			if (strcmp(p, "recovery") == 0)
+				searched = 2;
+		}
 
 		//printk(KERN_EMERG "searched = %s\n", p);
 		if (searched == 0 || p == NULL) {

@@ -59,7 +59,8 @@ WonderMedia Technologies, Inc.
  *
  ******************************************************************************/
 #define MC_CLOCK_CTRL0_ADDR      (__MC5_BASE + 0x0024)
-#define MC_CLOCK_CTRL1_ADDR      (__MC5_BASE + 0x0028)   
+#define MC_CLOCK_CTRL1_ADDR      (__MC5_BASE + 0x0028)
+#define MC_CONF_ADDR      (__MC5_BASE + 0x0034)
 
 
 /******************************************************************************
@@ -69,7 +70,7 @@ WonderMedia Technologies, Inc.
  ******************************************************************************/
 #define MC_CLOCK_CTRL0_REG			(REG32_PTR(MC_CLOCK_CTRL0_ADDR))/*0x24*/
 #define MC_CLOCK_CTRL1_REG			(REG32_PTR(MC_CLOCK_CTRL1_ADDR))/*0x28*/
-
+#define MC_CONF_REG      (REG32_PTR(MC_CONF_ADDR))/*0x34*/
 
 /******************************************************************************
  *
@@ -78,6 +79,7 @@ WonderMedia Technologies, Inc.
  ******************************************************************************/
 #define MC_CLOCK_CTRL0_VAL			(REG32_VAL(MC_CLOCK_CTRL0_ADDR))/*0x24*/
 #define MC_CLOCK_CTRL1_VAL			(REG32_VAL(MC_CLOCK_CTRL1_ADDR))/*0x28*/
+#define MC_CONF_VAL			(REG32_VAL(MC_CONF_ADDR))/*0x28*/
 
 
 //#define UDC_HOTPLUG_TIMER

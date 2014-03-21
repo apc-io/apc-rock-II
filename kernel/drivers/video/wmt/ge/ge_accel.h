@@ -34,7 +34,7 @@
 #define FB_ACCEL_WMT 0x8910
 #define MAX_XRES 1920
 #define MAX_YRES 1080
-#define GE_FB_NUM 4
+#define GE_FB_NUM 3
 
 #define HAVE_MALI
 #define HAVE_VPP

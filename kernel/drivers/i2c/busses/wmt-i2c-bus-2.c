@@ -624,6 +624,7 @@ static int i2c_wmt_wait_bus_not_busy(void)
 			ret = (-EBUSY) ;
 			printk("i2c_err 2: wait but not ready time-out\n\r") ;
 			cnt = 0;
+			break;
 		}
 	}
 	return ret ;
@@ -777,6 +778,7 @@ static irqreturn_t i2c_wmt_handler(
 		DPRINTK("[%s]:i2c NACK\n", __func__);
 		/*spin_lock(&i2c_fifolock);*/
 		list_del(&fifo_head->busfifohead);/*del request*/
+		kfree(fifo_head);
 		/*spin_unlock(&i2c_fifolock);*/
 		xfer_length = 0;
 		i2c.regs->isr_reg = I2C_ISR_NACK_ADDR_WRITE_CLEAR ;
@@ -790,6 +792,7 @@ static irqreturn_t i2c_wmt_handler(
 		printk("data rcv nack\n");
 		*/
 		list_del(&fifo_head->busfifohead);/*del request*/
+		kfree(fifo_head);
 		xfer_length = 0;
 		i2c.regs->isr_reg = I2C_ISR_BYTE_END_WRITE_CLEAR ;
 		i2c.isr_nack = 1 ;
@@ -1071,6 +1074,7 @@ static void i2c_resume(void)
 	i2c.regs->cr_reg  = 0 ;
 	i2c.regs->div_reg = wmt_i2c_reg.div_reg;
 	i2c.regs->imr_reg = wmt_i2c_reg.imr_reg;
+	i2c.regs->tr_reg = wmt_i2c_reg.tr_reg ;
 	i2c.regs->cr_reg = 0x001 ;
 }
 #else
@@ -1101,6 +1105,8 @@ static int __init i2c_adap_wmt_init(void)
 	unsigned int port_num;
 	int idx = 0;
 	int varlen = 80;
+	unsigned int pllb_freq = 0;
+	unsigned int tr_val = 0;
 
 #ifdef CONFIG_I2C_SLAVE_WMT
 #ifdef USE_UBOOT_PARA
@@ -1172,7 +1178,11 @@ static int __init i2c_adap_wmt_init(void)
 		/* hardware initial*/
 		/**/
 		auto_pll_divisor(DEV_I2C2, CLK_ENABLE, 0, 0);
-		auto_pll_divisor(DEV_I2C2, SET_DIV, 2, 20);/*20M Hz*/
+		pllb_freq = auto_pll_divisor(DEV_I2C2, SET_DIV, 2, 20);/*20M Hz*/
+		if ((pllb_freq%(1000*2*100)) != 0)
+			tr_val = pllb_freq/(1000*2*100) + 1;
+		else
+			tr_val = pllb_freq/(1000*2*100);
 		*(volatile unsigned char *)CTRL_GPIO &= ~(BIT4 | BIT5);
 		*(volatile unsigned char *)PU_EN_GPIO |= (BIT4 | BIT5);
 		*(volatile unsigned char *)PU_CTRL_GPIO |= (BIT4 | BIT5);
@@ -1186,9 +1196,11 @@ static int __init i2c_adap_wmt_init(void)
 		i2c.regs->isr_reg = I2C_ISR_ALL_WRITE_CLEAR ; /* 0x0007*/
 
 		if (i2c.i2c_mode == I2C_STANDARD_MODE)
-			i2c.regs->tr_reg = I2C_TR_STD_VALUE ;   /* 0x8064*/
-		else if (i2c.i2c_mode == I2C_FAST_MODE)
-			i2c.regs->tr_reg = I2C_TR_FAST_VALUE ; /* 0x8019*/
+			i2c.regs->tr_reg = 0xff00|tr_val;
+		else if (i2c.i2c_mode == I2C_FAST_MODE) {
+			tr_val /= 4;
+			i2c.regs->tr_reg = 0xff00|tr_val ;
+		}
 	}
 
 

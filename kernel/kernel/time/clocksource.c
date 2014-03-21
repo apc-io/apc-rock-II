@@ -591,7 +591,7 @@ static void clocksource_select(void)
 		break;
 	}
 	if (curr_clocksource != best) {
-		printk(KERN_INFO "Switching to clocksource %s\n", best->name);
+		//printk(KERN_INFO "Switching to clocksource %s\n", best->name);
 		curr_clocksource = best;
 		timekeeping_notify(curr_clocksource);
 	}

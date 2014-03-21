@@ -177,11 +177,16 @@ struct wmt_port {
 	unsigned int last_pos;
 	/* Record the number of RX dma timeout function with no data transmit*/
 	unsigned int uart_rx_dma_flag;
+	unsigned int dma_tx_cnt;
 #endif
 	unsigned int old_status;
 	/* identification string */
 	char *id;
+	unsigned int old_urdiv;
+	unsigned int old_urlcr;
 	unsigned int old_urier;
+	unsigned int old_urfcr;
+	unsigned int old_urtod;
 };
 
 #ifdef CONFIG_SERIAL_WMT_DMA
@@ -219,7 +224,14 @@ struct baud_info_s {
 							 * simply be calculated by baud * 0.004096
 							 */
 };
-
+#ifdef UART_DEBUG
+unsigned int *DMA_pbuf =NULL;
+unsigned int *COUNT_pbuf =NULL;
+unsigned int *CPU_pbuf =NULL;
+unsigned int dma_write_index = 0x00;
+#endif
+int mtk6622_tty = -1;
+extern int wmt_getsyspara(char *varname, char *varval, int *varlen);
 
 static struct baud_info_s baud_table[] = {
 	{   3600,  0x100FF,    15 },
@@ -314,6 +326,12 @@ static struct wmt_port wmt_ports[NR_PORTS];
 
 /*}2007/11/10-JHT*/
 
+enum {
+	SHARE_PIN_UART = 0,
+	SHARE_PIN_SPI,
+};
+static int wmt_uart_spi_sel = SHARE_PIN_UART;  /* 0:uart, 1:spi */
+
 void uart_dump_reg(struct wmt_port *sport)
 {
 	struct wmt_uart *uart = (struct wmt_uart *)PORT_TO_BASE(sport);
@@ -384,7 +402,6 @@ static void wmt_timeout(unsigned long data)
 	}
 }
 
-#ifdef CONFIG_SERIAL_WMT_DMA
 unsigned int rx_timeout = 1;
 
 static void wmt_rx_timeout(unsigned long data)
@@ -433,7 +450,6 @@ static void wmt_rx_timeout(unsigned long data)
 	mod_timer(&sport->rx_timer, jiffies + rx_timeout);
 
 }
-#endif
 
 
 /*
@@ -619,6 +635,46 @@ static unsigned int wmt_rx_count(struct wmt_port *sport)
 		}
 	}
 	return rx_count;
+}
+/*
+* we can use mu command to check memory content
+*/
+int volatile last_submit = 0x0;
+void dump_rx_dma_buf(struct wmt_port *sport)
+{
+	unsigned int rx_count = 0;
+	unsigned int pos;
+	int i;
+	int size=0;
+	unsigned char *tmpbuf;
+	pos = DMA_RX_POS(sport);
+	printk("sport->last_pos:0x%x,pos:0x%x,sport->buffer_rx_count_selected:0x%x,last_submit:0x%x\n",sport->last_pos,pos,sport->buffer_rx_count_selected,last_submit);
+	if ((sport->uart_rx_dma_phy0_org) <= pos && pos <= (sport->uart_rx_dma_phy0_org + UART_BUFFER_SIZE)){
+		i = pos - sport->uart_rx_dma_phy0_org;
+		tmpbuf = sport->uart_rx_dma_buf0_org + i;
+		size = (unsigned int)(sport->uart_rx_dma_buf0_org) + UART_BUFFER_SIZE - (unsigned int)tmpbuf;
+		if(size > 16)
+			size = 16;
+	}else if ((sport->uart_rx_dma_phy1_org)  <= pos && pos <=  (sport->uart_rx_dma_phy1_org + UART_BUFFER_SIZE)){
+		i = pos - sport->uart_rx_dma_phy1_org;
+		tmpbuf = sport->uart_rx_dma_buf1_org + i;
+		size =(unsigned int)( sport->uart_rx_dma_buf1_org) + UART_BUFFER_SIZE - (unsigned int)tmpbuf;
+		if(size > 16)
+			size = 16;
+	}else if ((sport->uart_rx_dma_phy2_org) <= pos && pos <=  (sport->uart_rx_dma_phy2_org + UART_BUFFER_SIZE)){
+		i = pos - sport->uart_rx_dma_phy2_org;
+		tmpbuf = sport->uart_rx_dma_buf2_org + i;
+		size = (unsigned int)(sport->uart_rx_dma_buf2_org) + UART_BUFFER_SIZE - (unsigned int)tmpbuf;
+		if(size > 16)
+			size = 16;
+	}
+
+	for(i=0;i<size;i++)
+		printk("0x%x ",*tmpbuf++);
+	
+	printk("\nsport->uart_rx_dma_phy0_org:0x%x\n",sport->uart_rx_dma_phy0_org);
+	printk("sport->uart_rx_dma_phy1_org:0x%x\n",sport->uart_rx_dma_phy1_org);
+	printk("sport->uart_rx_dma_phy2_org:0x%x\n",sport->uart_rx_dma_phy2_org);
 }
 #endif
 /*
@@ -1129,6 +1185,10 @@ static void wmt_tx_chars(struct wmt_port *sport)
 
 
 	if ((unsigned int)(sport->port.membase) != UART0_BASE_ADDR) {
+        while((uart->urusr  & URUSR_TXON));
+		if(sport->port.line == mtk6622_tty){
+			while ((uart->urusr & URUSR_TXDBSY));
+		}
 
 		if (sport->uart_tx_dma_flag == DMA_TX_END) {
 			sport->uart_tx_dma_flag = DMA_TX_XMIT;
@@ -1201,7 +1261,6 @@ static irqreturn_t wmt_int(int irq, void *dev_id)
 		if (status & URISR_TO_SM(URISR_RXFAF | URISR_RXFF | URISR_RXTOUT |\
 								 URISR_PER | URISR_FER)) {
 
-#ifdef CONFIG_SERIAL_WMT_DMA
 			if ((unsigned int)(sport->port.membase) == UART0_BASE_ADDR)
 				wmt_rx_chars(sport,  status);
 
@@ -1212,9 +1271,6 @@ static irqreturn_t wmt_int(int irq, void *dev_id)
 				mod_timer(&sport->rx_timer, jiffies + rx_timeout);
 				break;
 			}
-#else
-			wmt_rx_chars(sport,  status);
-#endif
 		}
 		/*
 		 * Second, we handle TX events.
@@ -1357,7 +1413,14 @@ static char *wmt_uartname[] = {
 static void uart_dma_callback_rx(void *data)
 {
 	struct wmt_port	*sport = data;
-
+#ifdef UART_DEBUG	
+	static int out_range =0x00;
+	if(dma_write_index >=4096){
+		printk("out of 4096\n");
+		dma_write_index = 0x00;
+		out_range++;
+	}
+#endif
 	if (sport->buffer_used == 0) {
 		sport->buffer_used = 1;
 		DMA_RX_START(sport, sport->uart_rx_dma_phy0_org, UART_BUFFER_SIZE);
@@ -1368,13 +1431,61 @@ static void uart_dma_callback_rx(void *data)
 		sport->buffer_used = 0;
 		DMA_RX_START(sport, sport->uart_rx_dma_phy2_org, UART_BUFFER_SIZE);
 	}
+#ifdef UART_DEBUG		
+	DMA_pbuf[dma_write_index] = sport->buffer_used + (out_range<<24);
+	//printk("0x%x dma rx DMA_pbuf[%d]:0x%x\n",(unsigned int)DMA_pbuf,dma_write_index,DMA_pbuf[dma_write_index]);
+	if(sport->buffer_rx_count_selected == 0){
+		COUNT_pbuf[dma_write_index] = sport->uart_dma_tmp_phy0;
+	}else if(sport->buffer_rx_count_selected == 1)	{
+		COUNT_pbuf[dma_write_index] = sport->uart_dma_tmp_phy1;
+	}else if(sport->buffer_rx_count_selected == 2)	{
+		COUNT_pbuf[dma_write_index] = sport->uart_dma_tmp_phy2;
+	}
+
+	if(sport->buffer_selected == 0){
+		CPU_pbuf[dma_write_index] = sport->uart_dma_tmp_buf0;
+	}else if(sport->buffer_selected == 1){
+		CPU_pbuf[dma_write_index] = sport->uart_dma_tmp_buf1;
+	}else if(sport->buffer_selected == 2){
+		CPU_pbuf[dma_write_index] = sport->uart_dma_tmp_buf2;
+	}
+	dma_write_index++;
+#endif	
 
 }
+#ifdef UART_DEBUG
+void print_dma_count_cpu_buf_pos(struct wmt_port *sport)
+{
+	int i;
+	for(i=0;i<UART_BUFFER_SIZE;i++){
+		//printk("0x%x DMA_pbuf[%d]:0x%x\n",DMA_pbuf,i,DMA_pbuf[i]);
+		if(DMA_pbuf[i] == 0x5a5a5a5a)
+			break;
+		printk("dma buf index:0x%x ",DMA_pbuf[i]);
+		if((sport->uart_rx_dma_phy0_org <= COUNT_pbuf[i]) && (COUNT_pbuf[i] <= (sport->uart_rx_dma_phy0_org+UART_BUFFER_SIZE))){
+			printk("count buf index:0x00 offset:0x%x ",COUNT_pbuf[i]-sport->uart_rx_dma_phy0_org);
+		}else if((sport->uart_rx_dma_phy1_org <= COUNT_pbuf[i]) && (COUNT_pbuf[i] <= (sport->uart_rx_dma_phy1_org+UART_BUFFER_SIZE))){
+			printk("count buf index:0x01 offset:0x%x ",COUNT_pbuf[i]-sport->uart_rx_dma_phy1_org);
+		}if((sport->uart_rx_dma_phy2_org <= COUNT_pbuf[i]) && (COUNT_pbuf[i] <= (sport->uart_rx_dma_phy2_org+UART_BUFFER_SIZE))){
+			printk("count buf index:0x02 offset:0x%x ",COUNT_pbuf[i]-sport->uart_rx_dma_phy2_org);
+		}
+
+		if((sport->uart_rx_dma_buf0_org <= CPU_pbuf[i]) && (CPU_pbuf[i] <= (sport->uart_rx_dma_buf0_org+UART_BUFFER_SIZE))){
+			printk("cpu buf index:0x00 offset:0x%x\n",CPU_pbuf[i]-(unsigned int)sport->uart_rx_dma_buf0_org);
+		}else if((sport->uart_rx_dma_buf1_org <= CPU_pbuf[i]) && (CPU_pbuf[i] <= (sport->uart_rx_dma_buf1_org+UART_BUFFER_SIZE))){
+			printk("cpu buf index:0x01 offset:0x%x\n",CPU_pbuf[i]-(unsigned int)sport->uart_rx_dma_buf1_org);
+		}if((sport->uart_rx_dma_buf2_org <= CPU_pbuf[i]) && (CPU_pbuf[i] <= (sport->uart_rx_dma_buf2_org+UART_BUFFER_SIZE))){
+			printk("cpu buf index:0x02 offset:0x%x\n",CPU_pbuf[i]-(unsigned int)sport->uart_rx_dma_buf2_org);
+		}
+		printk("\n");
+	}
+}
+#endif
 static void uart_dma_callback_tx(void *data)
 {
 	struct wmt_port	*sport = data;
 	unsigned long flags;
-
+	sport->dma_tx_cnt++;
 	spin_lock_irqsave(&sport->port.lock, flags);
 
 	if (sport->uart_tx_dma_flag == DMA_TX_CHAR) {
@@ -1400,6 +1511,20 @@ static void uart_dma_callback_tx(void *data)
 }
 #endif
 
+wmt_uart1_pre_init(void)
+{
+	GPIO_CTRL_GP18_UART_BYTE_VAL &= ~(BIT4 | BIT5);
+	auto_pll_divisor(DEV_UART1, CLK_ENABLE, 0, 0);
+	printk("wmt_uart1_pre_init\n");
+}
+
+wmt_uart1_post_deinit(void)
+{
+	GPIO_CTRL_GP18_UART_BYTE_VAL |= (BIT4 | BIT5);
+	auto_pll_divisor(DEV_UART1, CLK_DISABLE, 0, 0);
+	printk("wmt_uart1_post_deinit\n");
+}
+
 static int wmt_startup(struct uart_port *port)
 {
 	struct wmt_port *sport = (struct wmt_port *)port;
@@ -1423,6 +1548,7 @@ static int wmt_startup(struct uart_port *port)
 		break;
 
 	case IRQ_UART1:
+		wmt_uart1_pre_init();//added by rubbitxiao
 		uartname = wmt_uartname[1];
 #ifdef CONFIG_SERIAL_WMT_DMA
 		sport->dma_rx_dev = UART_1_RX_DMA_REQ;
@@ -1477,6 +1603,7 @@ static int wmt_startup(struct uart_port *port)
 		sport->last_pos = 0;
 		sport->uart_tx_dma_flag = DMA_TX_END;
 		sport->uart_tx_count = 0;
+		sport->dma_tx_cnt = 0x00;
 		init_timer(&sport->rx_timer);
 		sport->rx_timer.function = wmt_rx_timeout;
 		sport->rx_timer.data = (unsigned long)sport;
@@ -1487,6 +1614,37 @@ static int wmt_startup(struct uart_port *port)
 		DMA_RX_START(sport, sport->uart_rx_dma_phy0_org, UART_BUFFER_SIZE);
 		DMA_RX_START(sport, sport->uart_rx_dma_phy1_org, UART_BUFFER_SIZE);
 		DMA_RX_START(sport, sport->uart_rx_dma_phy2_org, UART_BUFFER_SIZE);
+#ifdef UART_DEBUG
+		DMA_pbuf  = kmalloc(UART_BUFFER_SIZE*sizeof(unsigned int*), GFP_KERNEL);
+		COUNT_pbuf  = kmalloc(UART_BUFFER_SIZE*sizeof(unsigned int*), GFP_KERNEL);
+		CPU_pbuf  = kmalloc(UART_BUFFER_SIZE*sizeof(unsigned int*), GFP_KERNEL);
+		if(!DMA_pbuf || !COUNT_pbuf || !CPU_pbuf){
+			printk("kmalloc buf for debug buf failed\n");
+			return;
+		}else{
+			memset(DMA_pbuf,0x5a,UART_BUFFER_SIZE*sizeof(unsigned int*));
+			memset(COUNT_pbuf,0x00,UART_BUFFER_SIZE*sizeof(unsigned int*));
+			memset(CPU_pbuf,0x00,UART_BUFFER_SIZE*sizeof(unsigned int*));			
+		}
+		dma_write_index =0x00;
+#endif
+		{
+			char uboot_buf[256];
+			int varlen = sizeof(uboot_buf);
+			if(wmt_getsyspara("wmt.bt.tty",uboot_buf,&varlen) == 0) 
+			{
+			  	sscanf(uboot_buf,"%d",&mtk6622_tty);
+				printk("mtk6622_tty:%d\n",mtk6622_tty);
+				if(1<=mtk6622_tty && mtk6622_tty <=3){
+					printk("wmt.bt.tty is correct\n");
+				}else{
+					printk("wmt.bt.tty is illegal\n");
+					mtk6622_tty = -1;
+				}
+			}else{
+				printk("have not set uboot variant:wmt.bt.tty\n");
+			}
+		}
 	}
 #endif
 	/*
@@ -1568,7 +1726,21 @@ static void wmt_shutdown(struct uart_port *port)
 	struct wmt_port *sport = (struct wmt_port *)port;
 	struct wmt_uart *uart = (struct wmt_uart *)PORT_TO_BASE(sport);
 	unsigned long flags;
-
+	//added begin by rubbitxiao
+	spin_lock_irqsave(&sport->port.lock, flags);
+	/* Disable TX,RX*/
+	uart->urlcr = 0;
+	/* Disable all interrupt*/
+	uart->urier = 0;
+	/*Reset TX,RX Fifo*/
+	uart->urfcr = URFCR_TXFRST | URFCR_RXFRST;
+	while (uart->urfcr)
+		;
+	/* Disable Fifo*/
+	uart->urfcr &= ~(URFCR_FIFOEN);
+	uart->urlcr |=  (URLCR_DLEN & ~URLCR_STBLEN & ~URLCR_PTYEN);
+	spin_unlock_irqrestore(&sport->port.lock, flags);
+	//added end by rubbitxiao
 	/*
 	 * Stop our timer.
 	 */
@@ -1582,9 +1754,9 @@ static void wmt_shutdown(struct uart_port *port)
 	/*
 	 * Disable all interrupts, port and break condition.
 	 */
-	spin_lock_irqsave(&sport->port.lock, flags);
-	uart->urier &= ~(URIER_ETXFE | URIER_ETXFAE | URIER_ERXFF | URIER_ERXFAF);
-	spin_unlock_irqrestore(&sport->port.lock, flags);
+	//spin_lock_irqsave(&sport->port.lock, flags);
+	//uart->urier &= ~(URIER_ETXFE | URIER_ETXFAE | URIER_ERXFF | URIER_ERXFAF);
+	//spin_unlock_irqrestore(&sport->port.lock, flags);
 
 #ifdef CONFIG_SERIAL_WMT_DMA
 	if ((unsigned int)(sport->port.membase) != UART0_BASE_ADDR) {
@@ -1600,6 +1772,8 @@ static void wmt_shutdown(struct uart_port *port)
 		DMA_TX_FREE(sport);
 	}
 #endif
+	if ((unsigned int)(sport->port.membase) == UART1_BASE_ADDR)
+		wmt_uart1_post_deinit();
 }
 
 /* wmt_uart_pm()
@@ -1894,6 +2068,17 @@ static struct uart_ops wmt_pops = {
 	.verify_port	= wmt_verify_port,
 };
 
+static int parse_spi1_param(void)
+{
+	char buf[64];
+	size_t l = sizeof(buf);
+	int uart_spi_sel = 0;
+
+	if (wmt_getsyspara("wmt.spi1.param", buf, &l) == 0) {
+		sscanf(buf, "%d", &uart_spi_sel);
+	}
+	return uart_spi_sel;
+}
 
 /* Setup the WMT serial ports.  Note that we don't include the IrDA
  * port here since we have our own SIR/FIR driver (see drivers/net/irda)
@@ -1911,6 +2096,8 @@ static void wmt_init_ports(void)
 		return;
 
 	first = 0;
+
+	wmt_uart_spi_sel = parse_spi1_param();
 
 	for (i = 0; i < NR_PORTS; i++) {
 		wmt_ports[i].port.uartclk    = 24000000;
@@ -1939,9 +2126,13 @@ static void wmt_init_ports(void)
 #endif
 
 	/*Set Uart0 and Uart1, Uart2 and Uart3  pin share*/
-	PIN_SHARING_SEL_4BYTE_VAL  &= ~(BIT10 | BIT9 | BIT8);
+	PIN_SHARING_SEL_4BYTE_VAL  &= ~(BIT9 | BIT8);
+	if (wmt_uart_spi_sel == SHARE_PIN_UART)
+		PIN_SHARING_SEL_4BYTE_VAL  &= ~(BIT10);
+
 #ifdef CONFIG_UART_2_3_ENABLE
-	PIN_SHARING_SEL_4BYTE_VAL |= (~BIT10 | BIT9 | BIT8);
+	//kevin modify    uart0,uart1(hw flow control),uart2
+    PIN_SHARING_SEL_4BYTE_VAL |= (BIT8);
 #endif
 
 	auto_pll_divisor(DEV_UART0, CLK_ENABLE, 0, 0);
@@ -2261,8 +2452,14 @@ static int wmt_serial_suspend(struct platform_device *pdev, pm_message_t state)
 		return 0;
 
 	spin_lock_irqsave(&sport->port.lock, flags);
-	/*disable host interrupt*/
+
+	/* save host register */
+	sport->old_urdiv = uart->urdiv;
+	sport->old_urlcr = uart->urlcr;
 	sport->old_urier = uart->urier;
+	sport->old_urfcr = uart->urfcr;
+	sport->old_urtod = uart->urtod;
+	
 	uart->urier = 0;
 	spin_unlock_irqrestore(&sport->port.lock, flags);
 
@@ -2306,9 +2503,13 @@ static int wmt_serial_resume(struct platform_device *pdev)
 #endif
 
 	/*Set Uart0 and Uart1, Uart2 and Uart3  pin share*/
-	PIN_SHARING_SEL_4BYTE_VAL  &= ~(BIT10 | BIT9 | BIT8);
+	PIN_SHARING_SEL_4BYTE_VAL  &= ~(BIT9 | BIT8);
+	if (wmt_uart_spi_sel == SHARE_PIN_UART)
+		PIN_SHARING_SEL_4BYTE_VAL  &= ~(BIT10);
+
 #ifdef CONFIG_UART_2_3_ENABLE
-	PIN_SHARING_SEL_4BYTE_VAL |= (~BIT10 | BIT9 | BIT8);
+	//kevin modify,    uart0,uart1(hw flow control),uart2
+    PIN_SHARING_SEL_4BYTE_VAL |= (BIT8);
 #endif
 
 	switch (sport->port.irq) {
@@ -2329,10 +2530,32 @@ static int wmt_serial_resume(struct platform_device *pdev)
 	default:
 		break;
 	}
+	
+	if (sport->port.irq != IRQ_UART0) {
+		/* Disable TX,RX */
+		uart->urlcr = 0;
+		/* Disable all interrupt */
+		uart->urier = 0;
+		/* Clear all interrupt */
+		uart->urisr = 0xffffffff;
+	
+		/* Disable Fifo */
+		uart->urfcr &= ~(URFCR_FIFOEN);
 
+		/* Reset TX,RX Fifo */
+		uart->urfcr = URFCR_TXFRST | URFCR_RXFRST;
+
+		while (uart->urfcr)
+			;
+	}
+	
 	spin_lock_irqsave(&sport->port.lock, flags);
 	/*store back the interrupt enable status*/
+	uart->urdiv = sport->old_urdiv;
+	uart->urfcr = sport->old_urfcr;
+	uart->urtod = sport->old_urtod;
 	uart->urier = sport->old_urier;
+	uart->urlcr = sport->old_urlcr;
 	spin_unlock_irqrestore(&sport->port.lock, flags);
 
 	if (sport) {
@@ -2343,7 +2566,60 @@ static int wmt_serial_resume(struct platform_device *pdev)
 
 	return 0;
 }
+#if 1
+void print_dma_position(struct wmt_port *sport)
+{
+	unsigned int *rx_dma = (unsigned int *)(0xfe001904 + (0x20*sport->rx_dmach));
+	printk("address 0x%p = 0x%x(value)\n",rx_dma,*rx_dma);
+}
 
+void print_dma_buf_pointer(struct wmt_port *sport)
+{
+	printk("buf0:0x%p;  buf1:0x%p;   buf2:0x%p\n",sport->uart_dma_tmp_buf0,sport->uart_dma_tmp_buf1,sport->uart_dma_tmp_buf2);
+	printk("phy0:0x%x; phy1:0x%x;  phy2:0x%x\n",sport->uart_dma_tmp_phy0,sport->uart_dma_tmp_phy1,sport->uart_dma_tmp_phy2);
+}
+void dump_uart_info(void)
+{
+     unsigned long flags;
+     struct wmt_port * p_wmt_port = &wmt_ports[1];
+     uart_dump_reg(p_wmt_port);
+     printk("sport1->port.icount.rx0:0x%x,uart_tx_dma_phy0_org:0x%x\n",p_wmt_port->port.icount.rx,p_wmt_port->uart_tx_dma_phy0_org);
+     print_dma_position(p_wmt_port);
+
+     //spin_lock_irqsave(&(p_wmt_port->port.lock), flags);
+     wmt_rx_chars(p_wmt_port,URISR_RXFAF | URISR_RXFF);
+     //spin_unlock_irqrestore(&(p_wmt_port->port.lock), flags);
+
+     print_dma_position(p_wmt_port);
+     printk("sport1->port.icount.rx1:0x%x,uart_tx_dma_phy0_org:0x%x\n",p_wmt_port->port.icount.rx,p_wmt_port->uart_tx_dma_phy0_org);
+     printk("uart rxxx dma channel register:\n");
+     wmt_dump_dma_regs(p_wmt_port->rx_dmach);
+     printk("uart tttx dma channel register:\n");
+     wmt_dump_dma_regs(p_wmt_port->tx_dmach);
+     printk("buf pointer position\n");
+     print_dma_buf_pointer(p_wmt_port);
+     printk("#######################################\n");
+     dump_rx_dma_buf(p_wmt_port);
+#ifdef UART_DEBUG	 
+     printk("##########################################\n");
+     print_dma_count_cpu_buf_pos(p_wmt_port);
+#endif
+    printk("#############debug dma tx failed begin#############\n");
+    printk("sport->port.icount.tx:0x%x,sport->uart_tx_count:0x%x\n",p_wmt_port->port.icount.tx,
+	p_wmt_port->uart_tx_count);
+    printk("dma_tx_cnt:0x%x\n",p_wmt_port->dma_tx_cnt);
+    printk("uart_tx_dma_flag:0x%x\n",p_wmt_port->uart_tx_dma_flag);
+	printk("uart_tx_stopped:%d\n",uart_tx_stopped(&p_wmt_port->port));
+	if(uart_tx_stopped(&p_wmt_port->port))
+	{
+		printk("stopped:%d\n",(&p_wmt_port->port)->state->port.tty->stopped);
+		printk("hw_stopped:%d\n",(&p_wmt_port->port)->state->port.tty->hw_stopped);
+	}
+    printk("#############debug dma tx failed end#############\n");	
+
+}
+EXPORT_SYMBOL(dump_uart_info);
+#endif
 static int wmt_serial_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -2362,7 +2638,6 @@ static int wmt_serial_probe(struct platform_device *pdev)
 			wmt_ports[i].port.dev = dev;
 			uart_add_one_port(&wmt_reg, &wmt_ports[i].port);
 			dev_set_drvdata(dev, &wmt_ports[i]);
-#ifdef CONFIG_SERIAL_WMT_DMA
 			if (i >= 1) {
 				wmt_ports[i].uart_rx_dma_buf0_org =
 					dma_alloc_coherent(NULL,
@@ -2385,7 +2660,6 @@ static int wmt_serial_probe(struct platform_device *pdev)
 							   &wmt_ports[i].uart_tx_dma_phy0_org,
 							   GFP_KERNEL);
 			}
-#endif
 			break;
 		}
 	}

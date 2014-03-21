@@ -171,24 +171,13 @@ static int part_get_fact_prot_info(struct mtd_info *mtd, struct otp_info *buf,
 	struct mtd_part *part = PART(mtd);
 	return part->master->_get_fact_prot_info(part->master, buf, len);
 }
-#ifdef CONFIG_MTD_NAND_WMT
-extern uint32_t part_wr;
-#endif
 static int part_write(struct mtd_info *mtd, loff_t to, size_t len,
 		size_t *retlen, const u_char *buf)
 {
 	int ret;
 	struct mtd_part *part = PART(mtd);
-	#ifdef CONFIG_MTD_NAND_WMT
-	part_wr = 1;
-	#endif
 	ret = part->master->_write(part->master, to + part->offset, len,
 				    retlen, buf);
-
-	#ifdef CONFIG_MTD_NAND_WMT
-	part_wr = 0;
-	#endif
-
 	return ret;
 }
 
@@ -770,3 +759,12 @@ int mtd_is_partition(struct mtd_info *mtd)
 	return ispart;
 }
 EXPORT_SYMBOL_GPL(mtd_is_partition);
+
+uint64_t mtd_get_device_size(struct mtd_info *mtd)
+{
+        if (!mtd_is_partition(mtd))
+                return mtd->size;
+
+        return PART(mtd)->master->size;
+}
+EXPORT_SYMBOL_GPL(mtd_get_device_size);

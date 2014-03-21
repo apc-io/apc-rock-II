@@ -15,6 +15,8 @@
 #include <asm/pgtable.h>
 #include "internal.h"
 
+extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
+
 void __attribute__((weak)) arch_report_meminfo(struct seq_file *m)
 {
 }
@@ -28,13 +30,32 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	long cached;
 	unsigned long pages[NR_LRU_LISTS];
 	int lru;
-
+	unsigned long misc_mem_total,misc_mem_free,m_mem_total,m_mem_free;
+	char param_name[] = "wmt.ram.fake_size";
+	int ret = -1;
+	unsigned char buf[80];
+	unsigned int paramlen= 80;
+	unsigned char colon;
 /*
  * display in kilobytes.
  */
 #define K(x) ((x) << (PAGE_SHIFT - 10))
 	si_meminfo(&i);
 	si_swapinfo(&i);
+
+	ret = wmt_getsyspara(param_name, buf, &paramlen);
+	if(ret == 0)
+	{
+		sscanf(buf,"%8lu%c%8lu", &misc_mem_total,&colon,&misc_mem_free);
+		m_mem_total = K(i.totalram)+misc_mem_total*1024;
+		m_mem_free = K(i.freeram)+misc_mem_free*1024;
+	}
+	else
+	{
+		m_mem_total = K(i.totalram);
+		m_mem_free = K(i.freeram);
+	}
+
 	committed = percpu_counter_read_positive(&vm_committed_as);
 	allowed = ((totalram_pages - hugetlb_total_pages())
 		* sysctl_overcommit_ratio / 100) + total_swap_pages;
@@ -105,8 +126,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 		"AnonHugePages:  %8lu kB\n"
 #endif
 		,
-		K(i.totalram),
-		K(i.freeram),
+		m_mem_total,
+		m_mem_free,
 		K(i.bufferram),
 		K(cached),
 		K(total_swapcache_pages),

@@ -172,11 +172,8 @@ static struct i2c_driver gmt2214_i2c_driver = {
 	.id_table = gmt2214_i2c_id,
 };
 
-#ifdef CONFIG_MTD_WMT_SF
 extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
-#endif
 
-#ifdef CONFIG_MTD_WMT_SF
 #define par_len 80
 static unsigned int g_i2cbus_id = 3;
 static unsigned int g_pmic_en = 0;
@@ -227,7 +224,8 @@ int parse_charger_param(void)
 	int retval;
 	unsigned char buf[240];
 	int varlen = par_len;
-	char *varname = "wmt.io.chg";
+	//char *varname = "wmt.io.chg";
+	char *varname = "wmt.charger.param";
 	retval = wmt_getsyspara(varname, buf, &varlen);
 	if (retval == 0) {
 		g_chg_en = (buf[0] - '0' == 1)?1:0;
@@ -244,17 +242,14 @@ int parse_charger_param(void)
 	g_chg_en = 1;
 	return 1;
 }
-#endif
 static int __init gmt2214_i2c_init(void)
 {
 	struct i2c_board_info *gmt2214_i2c_bi;
 	struct i2c_adapter *adapter = NULL;
 	struct i2c_client *client   = NULL;
 
-#ifdef CONFIG_MTD_WMT_SF
 	parse_pmic_param();
 	parse_charger_param();
-#endif
 	if (g_pmic_en == 0 && g_chg_en == 0) {
 		printk("Don't support GMT2214\n");
 		return -ENODEV;

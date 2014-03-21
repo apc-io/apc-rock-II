@@ -415,6 +415,70 @@ static void wakeup_source_report_event(struct wakeup_source *ws)
  *
  * It is safe to call this function from interrupt context.
  */
+
+
+/*add by kevin ,for wakeup lock debug.default is uncompile
+usage:
+    1: #define WAKE_TRACE_ENABLE   1
+    2: add wake_trace_show(); in kernel/power/main.c/state_show()
+    3: cat /sys/power/state
+*/
+#define WAKE_TRACE_ENABLE   0
+
+#if WAKE_TRACE_ENABLE
+#define WAKE_TRACE_NUMBER   100
+typedef struct{
+    char name[64];
+    int val;    
+}WAKE_TRACE;
+WAKE_TRACE wake_trace[WAKE_TRACE_NUMBER];
+int wake_trace_init=0;
+
+void wake_trace_lock(struct wakeup_source *ws){
+    int i;
+    if(wake_trace_init==0){
+        wake_trace_init = 1;
+        memset(wake_trace,0,sizeof(wake_trace));
+    }
+    for(i=0;i<WAKE_TRACE_NUMBER;i++){
+        if((strlen(wake_trace[i].name)>0&&!strcmp(wake_trace[i].name,ws->name)))
+            break;
+        if(strlen(wake_trace[i].name)<=0)
+            break;
+    }
+    if(i>=WAKE_TRACE_NUMBER)
+        printk("%s %d %s error\n",__func__,__LINE__,ws->name);
+    else{
+        if(strlen(wake_trace[i].name)<=0){
+            printk("%s %d insert %s\n",__func__,__LINE__,ws->name);
+            strcpy(wake_trace[i].name,ws->name);
+        }
+        wake_trace[i].val++;
+    }
+}
+void wake_trace_unlock(struct wakeup_source *ws){
+    int i;
+    for(i=0;i<WAKE_TRACE_NUMBER;i++){
+        if((strlen(wake_trace[i].name)>0&&!strcmp(wake_trace[i].name,ws->name)))
+            break;
+    }
+    if(i>=WAKE_TRACE_NUMBER)
+        printk("%s %d %s error\n",__func__,__LINE__,ws->name);
+    else{
+        wake_trace[i].val--;
+    }
+}
+
+int wake_trace_show(void)
+{
+    int i;
+    for(i=0;i<WAKE_TRACE_NUMBER;i++){
+        if(strlen(wake_trace[i].name)>0)
+            printk("%d %s %d\n",i,wake_trace[i].name,wake_trace[i].val);
+    }
+}
+EXPORT_SYMBOL_GPL(wake_trace_show);
+#endif
 void __pm_stay_awake(struct wakeup_source *ws)
 {
 	unsigned long flags;
@@ -423,6 +487,10 @@ void __pm_stay_awake(struct wakeup_source *ws)
 		return;
 
 	spin_lock_irqsave(&ws->lock, flags);
+
+#if WAKE_TRACE_ENABLE
+    wake_trace_lock(ws);
+#endif
 
 	wakeup_source_report_event(ws);
 	del_timer(&ws->timer);
@@ -540,6 +608,9 @@ void __pm_relax(struct wakeup_source *ws)
 		return;
 
 	spin_lock_irqsave(&ws->lock, flags);
+#if WAKE_TRACE_ENABLE
+    wake_trace_unlock(ws);
+#endif
 	if (ws->active)
 		wakeup_source_deactivate(ws);
 	spin_unlock_irqrestore(&ws->lock, flags);
@@ -611,6 +682,10 @@ void __pm_wakeup_event(struct wakeup_source *ws, unsigned int msec)
 
 	spin_lock_irqsave(&ws->lock, flags);
 
+#if WAKE_TRACE_ENABLE
+    wake_trace_lock(ws);
+#endif
+
 	wakeup_source_report_event(ws);
 
 	if (!msec) {
@@ -658,11 +733,11 @@ static void print_active_wakeup_sources(void)
 	struct wakeup_source *ws;
 	int active = 0;
 	struct wakeup_source *last_activity_ws = NULL;
-
+	printk("in %s\n",__FUNCTION__);
 	rcu_read_lock();
 	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
 		if (ws->active) {
-			pr_info("active wakeup source: %s\n", ws->name);
+			printk("active wakeup source: %s\n", ws->name);
 			active = 1;
 		} else if (!active &&
 			   (!last_activity_ws ||
@@ -671,9 +746,8 @@ static void print_active_wakeup_sources(void)
 			last_activity_ws = ws;
 		}
 	}
-
 	if (!active && last_activity_ws)
-		pr_info("last active wakeup source: %s\n",
+		printk("last active wakeup source: %s\n",
 			last_activity_ws->name);
 	rcu_read_unlock();
 }
@@ -836,7 +910,7 @@ static int print_wakeup_source_stats(struct seq_file *m,
 		active_time = ktime_set(0, 0);
 	}
 
-	ret = seq_printf(m, "%-12s\t%lu\t\t%lu\t\t%lu\t\t%lu\t\t"
+	ret = seq_printf(m, "%-20s\t%lu\t\t%lu\t\t%lu\t\t%lu\t\t"
 			"%lld\t\t%lld\t\t%lld\t\t%lld\t\t%lld\n",
 			ws->name, active_count, ws->event_count,
 			ws->wakeup_count, ws->expire_count,
@@ -857,7 +931,7 @@ static int wakeup_sources_stats_show(struct seq_file *m, void *unused)
 {
 	struct wakeup_source *ws;
 
-	seq_puts(m, "name\t\tactive_count\tevent_count\twakeup_count\t"
+	seq_puts(m, "name\t\t\tactive_count\tevent_count\twakeup_count\t"
 		"expire_count\tactive_since\ttotal_time\tmax_time\t"
 		"last_change\tprevent_suspend_time\n");
 

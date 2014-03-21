@@ -90,8 +90,8 @@ WonderMedia Technologies, Inc.
 #define	GPIO_SD2_POWER			BIT6
 
 /* SDIO Power pin */
-#define SDIO_WIFI_PWR			BIT7
-#define SDIO_WIFI_INT			BIT0
+#define SDIO_WIFI_PWR			BIT2
+#define SDIO_WIFI_INT			BIT3
 #define SOIO_WIFI_WAKE_FUN		BIT27
 
 #define	SD0_PIN		(GPIO_SD0_Clock | GPIO_SD0_Command | GPIO_SD0_WriteProtect | GPIO_SD0_Data)
@@ -555,39 +555,6 @@ struct SD_PDMA_REG {
 #define	SD_PDMA_CCR_Evt_data_rw			0x00000004
 #define	SD_PDMA_CCR_Evt_early_end		0x00000005
 #define	SD_PDMA_CCR_Evt_success			0x0000000f
-
-
-typedef struct {
-	unsigned int	dev_num;
-	unsigned int	gpio_pwr_active_level;
-	unsigned int	gpio_pwr_bitnum;
-	unsigned int	gpio_pwr_reg_gpio_en;
-	unsigned int	gpio_pwr_reg_gpio_od;
-	unsigned int	gpio_pwr_reg_gpio_oc;
-}sdio_pwr_uboot_env_t;
-
-typedef struct {
-	unsigned int	dev_num;
-	unsigned int	gpio_int_bitnum;
-	unsigned int	gpio_int_reg_gpio_en;
-	unsigned int	gpio_int_reg_gpio_od;
-	unsigned int	gpio_int_reg_gpio_oc;
-	unsigned int	gpio_int_reg_gpio_int;
-	unsigned int	gpio_int_reg_gpio_ints;
-	unsigned int	gpio_int_reg_gpio_pe;
-	unsigned int	gpio_int_reg_gpio_pu;
-}sdio_int_uboot_env_t;
-
-typedef struct {
-	unsigned int	dev_num;
-	unsigned int	gpio_wakeup_bitnum;
-	unsigned int	gpio_wakeup_reg_gpio_en;
-	unsigned int	gpio_wakeup_reg_gpio_od;
-	unsigned int	gpio_wakeup_reg_gpio_oc;
-	unsigned int	gpio_wakeup_reg_gpio_pe;
-	unsigned int	gpio_wakeup_reg_gpio_pu;
-	unsigned int	gpio_wakeup_num;
-}sdio_wakeup_uboot_env_t;
 
 /*
  *	PDMA Descriptor	short

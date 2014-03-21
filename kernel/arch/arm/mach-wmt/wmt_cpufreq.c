@@ -295,13 +295,21 @@ static int wmt_target(struct cpufreq_policy *, unsigned, unsigned);
 static int wmt_suspend_target(unsigned target, unsigned relation, unsigned is_suspend)
 {
 	unsigned int cur_freq = wmt_getspeed(0);
-	struct cpufreq_policy *policy = cpufreq_cpu_get(0); /* boot CPU */
+	int voltage = 0;
 	
 	down(&wmt_cpufreq_sem);
 
-	wmt_target(policy, target, relation);
-	printk(KERN_INFO "CPU%d suspend frequency to %dKhz\n\n\n", policy->cpu,
-													wmt_getspeed(policy->cpu));
+	/*
+	 * Set to the highest voltage before suspend/reboot
+	 */
+	if (use_regulator) {
+		if (use_dvfs_debug)
+			printk("Set to Max. Voltage: %dmV\n", wmt_dvfs_drvdata.dvfs_table[(wmt_dvfs_drvdata.tbl_num - 1)].vol);
+		regulator_set_voltage(re, wmt_dvfs_drvdata.dvfs_table[(wmt_dvfs_drvdata.tbl_num - 1)].vol * 1000,
+					wmt_dvfs_drvdata.dvfs_table[(wmt_dvfs_drvdata.tbl_num - 1)].vol * 1000);
+		voltage = regulator_get_voltage(re);
+		printk("Current voltage = %d\n", voltage);
+	}
 	/* for some governor, like userspace, performance, powersaving,
 	 * need change frequency to pre-suspend when resume */
 	wmt_dvfs_running = 0;
@@ -468,6 +476,18 @@ wmt_cpufreq_pm_notify(struct notifier_block *nb, unsigned long event, void *dumm
 {
 	struct cpufreq_policy *policy = cpufreq_cpu_get(0);
 	int default_voltage = 0;
+	struct plla_param plla_env;
+	struct wmt_dvfs_table *plla_table = NULL;
+
+	plla_table = &wmt_dvfs_drvdata.dvfs_table[0];
+
+	plla_env.plla_clk = (plla_table->freq / 1000);
+	plla_env.arm_div = 1;
+	plla_env.l2c_div = plla_table->l2c_div;
+	plla_env.l2c_tag_div = plla_table->l2c_tag;
+	plla_env.l2c_data_div = plla_table->l2c_data;
+	plla_env.axi_div = plla_table->axi;
+	plla_env.tb_index = plla_table->index;
 
 	if (event == PM_SUSPEND_PREPARE)
 		wmt_suspend_target(0, CPUFREQ_RELATION_L, 1);
@@ -477,6 +497,9 @@ wmt_cpufreq_pm_notify(struct notifier_block *nb, unsigned long event, void *dumm
 			if (use_dvfs_debug)
 				printk("default_voltage = %d\n", default_voltage);
 			regulator_set_voltage(re, default_voltage, default_voltage);
+			if (use_dvfs_debug)
+				printk("Set Min. Freq = %d\n", plla_env.plla_clk);
+			set_plla_divisor(&plla_env);
 		}
 		down(&wmt_cpufreq_sem);
 		wmt_dvfs_running = 1;
@@ -518,7 +541,7 @@ static int wmt_cpu_init(struct cpufreq_policy *policy)
 		return -EINVAL;
 
 	wmt_freq_tbl = wmt_dvfs_drvdata.freq_table;
-    if (!wmt_freq_tbl)
+	if (!wmt_freq_tbl)
 		return -EINVAL;
 
 	policy->cur = wmt_getspeed(policy->cpu);

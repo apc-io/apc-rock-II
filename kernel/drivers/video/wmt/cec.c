@@ -120,7 +120,7 @@ int wmt_cec_rx_data(char *buf)
 
 void wmt_cec_set_clock(void)
 {
-	#define CEC_CLOCK (1000000 / 6984)
+	#define CEC_CLOCK (1000000 / 7984)
 
 	vppif_reg32_out(REG_CEC_WR_START_SET0, 370 * CEC_CLOCK); /* 3.7 ms */
 	vppif_reg32_out(REG_CEC_WR_START_SET1, 450 * CEC_CLOCK); /* 4.5 ms */

@@ -43,12 +43,19 @@
 #define GMT_DC1_MAX_STAGE 16
 #define GMT_DC2_MAX_STAGE 16
 #define GMT_LDOX_MAX_STAGE 2
+#define GMT_LDO56_MAX_STAGE 4
 
 #define GMT_DC1_MIN_UV  1050000 
 #define GMT_DC1_MAX_UV  1500000
 
 #define GMT_DC2_MIN_UV  1050000 
 #define GMT_DC2_MAX_UV  1500000
+
+#define GMTV1_DC1_MIN_UV  1000000 
+#define GMTV1_DC1_MAX_UV  1400000
+
+#define GMTV1_DC2_MIN_UV  1000000 
+#define GMTV1_DC2_MAX_UV  1400000
 
 #define DC1_REG_IDX 4
 #define DC2_REG_IDX 4
@@ -61,16 +68,23 @@
 #define GMT_LDOX_MIN_UV  1050000 
 #define GMT_LDOX_MAX_UV  1500000
 
+#define LDO56_REG_IDX 3
+#define LDO5_REG_SHIFT 2
+#define LDO6_REG_SHIFT 0
+#define LDO5_REG_MASK 0x0c
+#define LDO6_REG_MASK 0x03
+#define GMT_LDO56_MIN_UV  1500000 
+#define GMT_LDO56_MAX_UV  3300000
+
 #define SUPPORT_DC_NUM 7
 /*
 #define DEBUG
 */
 
-#ifdef CONFIG_MTD_WMT_SF
 extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
-#endif
 static unsigned int g_i2cbus_id = 2;
 static unsigned int g_pmic_en = 0;
+static unsigned int gmt_version = 0;
 
 struct gmt_data {
 	struct i2c_client *client;
@@ -160,18 +174,29 @@ static int gmt_dc1_set_voltage(struct regulator_dev *rdev, int min_uV, int max_u
 	if (min_uV < gmt->dc1_min_uV)
 		min_uV = gmt->dc1_min_uV;
 
-	if (min_uV < 1200000) {
-		if ((min_uV - gmt->dc1_min_uV) % 50000) 
-			*selector = ((min_uV - gmt->dc1_min_uV) / 50000) + 1;
-		else
-			*selector = (min_uV - gmt->dc1_min_uV) / 50000;
-		
+	if (gmt_version == 0) {
+		if (min_uV < 1200000) {
+			if ((min_uV - gmt->dc1_min_uV) % 50000) 
+				*selector = ((min_uV - gmt->dc1_min_uV) / 50000) + 1;
+			else
+				*selector = (min_uV - gmt->dc1_min_uV) / 50000;
+			
+		} else {
+			if ((min_uV - 1200000) % 25000) 
+				*selector = ((min_uV - 1200000) / 25000) + 1;
+			else
+				*selector = (min_uV - 1200000) / 25000;
+			*selector += 3;
+		}
 	} else {
-		if ((min_uV - 1200000) % 25000) 
-			*selector = ((min_uV - 1200000) / 25000) + 1;
-		else
-			*selector = (min_uV - 1200000) / 25000;
-		*selector += 3;
+		if (min_uV >= 1400000)
+			*selector = 15;
+		else {
+			if ((min_uV - 1000000) % 25000) 
+				*selector = ((min_uV - 1000000) / 25000) + 1;
+			else
+				*selector = (min_uV - 1000000) / 25000;
+		}
 	}
 
 	if (!swap_dc1_dc2) {
@@ -219,11 +244,18 @@ static int gmt_dc1_update_voltage(void)
 		tmp_buf >>= DC2_REG_SHIFT;
 	}
 
-	if (tmp_buf < 3)
-		current_uV = 1050000 + tmp_buf * 50000;
-	else {
-		tmp_buf -= 3;
-		current_uV = 1200000 + tmp_buf * 25000;
+	if (gmt_version == 0) {
+		if (tmp_buf < 3)
+			current_uV = 1050000 + tmp_buf * 50000;
+		else {
+			tmp_buf -= 3;
+			current_uV = 1200000 + tmp_buf * 25000;
+		}
+	} else {
+		if (tmp_buf == 0xf)
+			current_uV = 1400000;
+		else
+			current_uV = 1000000 + tmp_buf * 25000;
 	}
 	g_gmtdata->dc1_current_uV = current_uV;
 	return ret;
@@ -244,11 +276,18 @@ static int gmt_dc1_get_voltage(struct regulator_dev *rdev)
 		tmp_buf &= DC2_REG_MASK;
 		tmp_buf >>= DC2_REG_SHIFT;
 	}
-	if (tmp_buf < 3)
-		current_uV = 1050000 + tmp_buf * 50000;
-	else {
-		tmp_buf -= 3;
-		current_uV = 1200000 + tmp_buf * 25000;
+	if (gmt_version == 0) {
+		if (tmp_buf < 3)
+			current_uV = 1050000 + tmp_buf * 50000;
+		else {
+			tmp_buf -= 3;
+			current_uV = 1200000 + tmp_buf * 25000;
+		}
+	} else {
+		if (tmp_buf == 0xf)
+			current_uV = 1400000;
+		else
+			current_uV = 1000000 + tmp_buf * 25000;
 	}
 	gmt->dc1_current_uV = current_uV;
 	return gmt->dc1_current_uV;
@@ -279,18 +318,29 @@ static int _gmt_dc2_set_voltage(struct regulator_dev *rdev, int uV)
 	else
 		selector = (uV - gmt->dc2_min_uV) / 25000;
 	*/
-	if (uV < 1200000) {
-		if ((uV - gmt->dc2_min_uV) % 50000)
-			selector = ((uV - gmt->dc2_min_uV) / 50000) + 1;
-		else
-			selector = (uV - gmt->dc2_min_uV) / 50000;
+	if (gmt_version == 0) {
+		if (uV < 1200000) {
+			if ((uV - gmt->dc2_min_uV) % 50000)
+				selector = ((uV - gmt->dc2_min_uV) / 50000) + 1;
+			else
+				selector = (uV - gmt->dc2_min_uV) / 50000;
 
+		} else {
+			if ((uV - 1200000) % 25000)
+				selector = ((uV - 1200000) / 25000) + 1;
+			else
+				selector = (uV - 1200000) / 25000;
+			selector += 3;
+		}
 	} else {
-		if ((uV - 1200000) % 25000)
-			selector = ((uV - 1200000) / 25000) + 1;
-		else
-			selector = (uV - 1200000) / 25000;
-		selector += 3;
+		if (uV >= 1400000)
+			selector = 15;
+		else {
+			if ((uV - 1000000) % 25000) 
+				selector = ((uV - 1000000) / 25000) + 1;
+			else
+				selector = (uV - 1000000) / 25000;
+		}
 	}
 
 	if (!swap_dc1_dc2) {
@@ -375,6 +425,28 @@ static int gmt_dc2_set_voltage(struct regulator_dev *rdev, int min_uV, int max_u
 	gmt->dc2_current_uV = min_uV;
 	return ret;
 }
+static unsigned int gmt_read_version(void)
+{
+	unsigned int ver = 0;
+	int ret = 0;
+	ret = gmt_read_i2c(g_gmtdata->gmt_dev, 13, &ver);
+	ver &= 0x30;
+	ver >>= 4;
+	return ver;
+#if 0
+	unsigned int ver = 0;
+	int ret = 0;
+	g_gmtdata->gmt_dev->i2c->addr = 0x01;
+	while(g_gmtdata->gmt_dev->i2c->addr < 0x80){
+		printk("addr:0x%x, ret: %d\n", g_gmtdata->gmt_dev->i2c->addr, gmt_read_i2c(g_gmtdata->gmt_dev, 13, &ver));
+		ver &= 0x30;
+		ver >>= 4;
+		g_gmtdata->gmt_dev->i2c->addr++;
+	}
+	return ver;
+#endif
+}
+
 static int gmt_dc2_update_voltage(void)
 {
 	unsigned int tmp_buf = 0;
@@ -390,11 +462,18 @@ static int gmt_dc2_update_voltage(void)
 		tmp_buf &= DC1_REG_MASK;
 		tmp_buf >>= DC1_REG_SHIFT;
 	}
-	if (tmp_buf < 3)
-		current_uV = 1050000 + tmp_buf * 50000;
-	else {
-		tmp_buf -= 3;
-		current_uV = 1200000 + tmp_buf * 25000;
+	if (gmt_version == 0) {
+		if (tmp_buf < 3)
+			current_uV = 1050000 + tmp_buf * 50000;
+		else {
+			tmp_buf -= 3;
+			current_uV = 1200000 + tmp_buf * 25000;
+		}
+	} else {
+		if (tmp_buf == 0xf)
+			current_uV = 1400000;
+		else
+			current_uV = 1000000 + tmp_buf * 25000;
 	}
 
 	g_gmtdata->dc2_current_uV = current_uV;
@@ -416,17 +495,38 @@ static int gmt_dc2_get_voltage(struct regulator_dev *rdev)
 		tmp_buf &= DC1_REG_MASK;
 		tmp_buf >>= DC1_REG_SHIFT;
 	}
-	if (tmp_buf < 3)
-		current_uV = 1050000 + tmp_buf * 50000;
-	else {
-		tmp_buf -= 3;
-		current_uV = 1200000 + tmp_buf * 25000;
+	if (gmt_version == 0) {
+		if (tmp_buf < 3)
+			current_uV = 1050000 + tmp_buf * 50000;
+		else {
+			tmp_buf -= 3;
+			current_uV = 1200000 + tmp_buf * 25000;
+		}
+	} else {
+		if (tmp_buf == 0xf)
+			current_uV = 1400000;
+		else
+			current_uV = 1000000 + tmp_buf * 25000;
 	}
 
 	gmt->dc2_current_uV = current_uV;
 	return gmt->dc2_current_uV;
 }
 
+static int recovery_ldox_state(void)
+{
+	unsigned int ret = 0;
+	ret = i2cWriteToGMT(g_gmtdata->gmt_dev, LDXEN_REG_IDX, g_gmtdata->regs[LDXEN_REG_IDX]);
+	return ret;
+}
+static int update_ldox_state(void)
+{
+	unsigned int tmp_buf;
+	unsigned int ret;
+	ret = gmt_read_i2c(g_gmtdata->gmt_dev, LDXEN_REG_IDX, &tmp_buf);
+	g_gmtdata->regs[LDXEN_REG_IDX] = (unsigned char)tmp_buf;
+	return ret;
+}
 static int gmt_dc2_is_enabled(struct regulator_dev *rdev)
 {
 	struct gmt_data *gmt = rdev_get_drvdata(rdev);
@@ -440,8 +540,11 @@ static int gmt_ldox_enable(struct regulator_dev *rdev, unsigned int ldo_num)
 {
 	struct gmt_data *gmt = rdev_get_drvdata(rdev);
 	unsigned char reg_val;
+	unsigned int tmp_buf;
 	if (ldo_num < 2 || ldo_num > 6)
 		return -1;
+	gmt_read_i2c(g_gmtdata->gmt_dev, LDXEN_REG_IDX, &tmp_buf);
+	gmt->regs[LDXEN_REG_IDX] = (unsigned char)tmp_buf;
 	reg_val =  gmt->regs[LDXEN_REG_IDX];
 	switch (ldo_num) {
 	case 2:
@@ -478,8 +581,11 @@ static int gmt_ldox_disable(struct regulator_dev *rdev, unsigned int ldo_num)
 {
 	struct gmt_data *gmt = rdev_get_drvdata(rdev);
 	unsigned char reg_val;
+	unsigned int tmp_buf = 0;
 	if (ldo_num < 2 || ldo_num > 6)
 		return -1;
+	gmt_read_i2c(g_gmtdata->gmt_dev, LDXEN_REG_IDX, &tmp_buf);
+	gmt->regs[LDXEN_REG_IDX] = (unsigned char)tmp_buf;
 	reg_val =  gmt->regs[LDXEN_REG_IDX];
 	switch (ldo_num) {
 	case 2:
@@ -511,14 +617,21 @@ static int gmt_ldox_disable(struct regulator_dev *rdev, unsigned int ldo_num)
 
 	return 0;
 }
+static int get_ldox_state(struct regulator_dev *rdev, unsigned int ldo_num)
+{
+	unsigned int tmp_buf = 0;
+	struct gmt_data *gmt = rdev_get_drvdata(rdev);
+	if (ldo_num < 2 || ldo_num > 6)
+		return -1;
+	gmt_read_i2c(gmt->gmt_dev, LDXEN_REG_IDX, &tmp_buf);
+	if (tmp_buf & (0x1 << (9 - ldo_num))) 
+		return 1;/*enabled*/
+	else
+		return 0;
+} 
 static int gmt_ldo2_is_enabled(struct regulator_dev *rdev)
 {
-	struct gmt_data *gmt = rdev_get_drvdata(rdev);
-	if (gmt->enabled == 1)
-		return 0;
-	else
-		return -EDOM;
-	return 0;
+	return get_ldox_state(rdev, 2);
 }
 static int gmt_ldo2_enable(struct regulator_dev *rdev)
 {
@@ -534,12 +647,7 @@ static int gmt_ldo2_disable(struct regulator_dev *rdev)
 
 static int gmt_ldo3_is_enabled(struct regulator_dev *rdev)
 {
-	struct gmt_data *gmt = rdev_get_drvdata(rdev);
-	if (gmt->enabled == 1)
-		return 0;
-	else
-		return -EDOM;
-	return 0;
+	return get_ldox_state(rdev, 3);
 }
 static int gmt_ldo3_enable(struct regulator_dev *rdev)
 {
@@ -555,12 +663,7 @@ static int gmt_ldo3_disable(struct regulator_dev *rdev)
 
 static int gmt_ldo4_is_enabled(struct regulator_dev *rdev)
 {
-	struct gmt_data *gmt = rdev_get_drvdata(rdev);
-	if (gmt->enabled == 1)
-		return 0;
-	else
-		return -EDOM;
-	return 0;
+	return get_ldox_state(rdev, 4);
 }
 static int gmt_ldo4_enable(struct regulator_dev *rdev)
 {
@@ -576,12 +679,7 @@ static int gmt_ldo4_disable(struct regulator_dev *rdev)
 
 static int gmt_ldo5_is_enabled(struct regulator_dev *rdev)
 {
-	struct gmt_data *gmt = rdev_get_drvdata(rdev);
-	if (gmt->enabled == 1)
-		return 0;
-	else
-		return -EDOM;
-	return 0;
+	return get_ldox_state(rdev, 5);
 }
 static int gmt_ldo5_enable(struct regulator_dev *rdev)
 {
@@ -597,12 +695,7 @@ static int gmt_ldo5_disable(struct regulator_dev *rdev)
 
 static int gmt_ldo6_is_enabled(struct regulator_dev *rdev)
 {
-	struct gmt_data *gmt = rdev_get_drvdata(rdev);
-	if (gmt->enabled == 1)
-		return 0;
-	else
-		return -EDOM;
-	return 0;
+	return get_ldox_state(rdev, 6);
 }
 static int gmt_ldo6_enable(struct regulator_dev *rdev)
 {
@@ -613,6 +706,49 @@ static int gmt_ldo6_enable(struct regulator_dev *rdev)
 static int gmt_ldo6_disable(struct regulator_dev *rdev)
 {
 	gmt_ldox_disable(rdev, 6);
+	return 0;
+}
+
+static int gmt_ldo56_list_voltage(struct regulator_dev *rdev, unsigned selector)
+{
+	int ret;
+	switch (selector) {
+	case 0:
+		ret = 1500000;
+		break;
+	case 1:
+		ret = 1800000;
+		break;
+	case 2:
+		ret = 2800000;
+		break;
+	case 3:
+		ret = 3300000;
+		break;
+	default:
+		ret = -1;
+		break;
+	}
+	return ret;
+}
+
+static int gmt_ldo56_set_voltage_sel(struct regulator_dev *rdev, unsigned selector)
+{
+	struct gmt_data *gmt = rdev_get_drvdata(rdev);
+	const char *rdev_name = rdev->desc->name;
+	u8 reg_val = gmt->regs[LDO56_REG_IDX];
+
+	if (!strcmp(rdev_name, "ldo5")) {
+		reg_val &= ~LDO5_REG_MASK; 
+		reg_val |= ((selector << LDO5_REG_SHIFT) & LDO5_REG_MASK);
+	} else if (!strcmp(rdev_name, "ldo6")) {
+		reg_val &= ~LDO6_REG_MASK; 
+		reg_val |= ((selector << LDO6_REG_SHIFT) & LDO6_REG_MASK);
+	} else
+		return -EINVAL;
+
+	i2cWriteToGMT(gmt->gmt_dev, LDO56_REG_IDX, reg_val);
+	gmt->regs[LDO56_REG_IDX] = reg_val;
 	return 0;
 }
 
@@ -650,12 +786,16 @@ static struct regulator_ops gmt_ldo5_ops = {
 	.enable		= gmt_ldo5_enable,
 	.disable	= gmt_ldo5_disable,
 	.is_enabled	= gmt_ldo5_is_enabled,
+	.list_voltage	= gmt_ldo56_list_voltage,
+	.set_voltage_sel	= gmt_ldo56_set_voltage_sel,
 };
 
 static struct regulator_ops gmt_ldo6_ops = {
 	.enable		= gmt_ldo6_enable,
 	.disable	= gmt_ldo6_disable,
 	.is_enabled	= gmt_ldo6_is_enabled,
+	.list_voltage	= gmt_ldo56_list_voltage,
+	.set_voltage_sel	= gmt_ldo56_set_voltage_sel,
 };
 
 static struct regulator_desc gmt_reg[] = {
@@ -704,7 +844,7 @@ static struct regulator_desc gmt_reg[] = {
 		.id = 0,
 		.ops = &gmt_ldo5_ops,
 		.type = REGULATOR_VOLTAGE,
-		.n_voltages = GMT_LDOX_MAX_STAGE,
+		.n_voltages = GMT_LDO56_MAX_STAGE,
 		.owner = THIS_MODULE,
 	},
 	{
@@ -712,7 +852,7 @@ static struct regulator_desc gmt_reg[] = {
 		.id = 0,
 		.ops = &gmt_ldo6_ops,
 		.type = REGULATOR_VOLTAGE,
-		.n_voltages = GMT_LDOX_MAX_STAGE,
+		.n_voltages = GMT_LDO56_MAX_STAGE,
 		.owner = THIS_MODULE,
 	},
 };
@@ -746,11 +886,39 @@ static struct regulator_init_data gmt_dc1_power = {
 	.num_consumer_supplies  = 1,
 	.consumer_supplies      = &gmt_dc1_supply,
 };
+static struct regulator_init_data gmtv1_dc1_power = {
+	.constraints = {
+		.min_uV                 = GMTV1_DC1_MIN_UV,
+		.max_uV                 = GMTV1_DC1_MAX_UV,
+		.apply_uV               = true,
+		.valid_modes_mask       = REGULATOR_MODE_NORMAL
+					| REGULATOR_MODE_STANDBY,
+		.valid_ops_mask         = REGULATOR_CHANGE_MODE
+					| REGULATOR_CHANGE_STATUS
+					| REGULATOR_CHANGE_VOLTAGE,
+	},
+	.num_consumer_supplies  = 1,
+	.consumer_supplies      = &gmt_dc1_supply,
+};
 
 static struct regulator_init_data gmt_dc2_power = {
 	.constraints = {
 		.min_uV                 = GMT_DC2_MIN_UV,
 		.max_uV                 = GMT_DC2_MAX_UV,
+		.apply_uV               = true,
+		.valid_modes_mask       = REGULATOR_MODE_NORMAL
+					| REGULATOR_MODE_STANDBY,
+		.valid_ops_mask         = REGULATOR_CHANGE_MODE
+					| REGULATOR_CHANGE_STATUS
+					| REGULATOR_CHANGE_VOLTAGE,
+	},
+	.num_consumer_supplies  = 1,
+	.consumer_supplies      = &gmt_dc2_supply,
+};
+static struct regulator_init_data gmtv1_dc2_power = {
+	.constraints = {
+		.min_uV                 = GMTV1_DC2_MIN_UV,
+		.max_uV                 = GMTV1_DC2_MAX_UV,
 		.apply_uV               = true,
 		.valid_modes_mask       = REGULATOR_MODE_NORMAL
 					| REGULATOR_MODE_STANDBY,
@@ -806,8 +974,8 @@ static struct regulator_init_data gmt_ldo4_power = {
 };
 static struct regulator_init_data gmt_ldo5_power = {
 	.constraints = {
-		.min_uV                 = GMT_LDOX_MIN_UV,
-		.max_uV                 = GMT_LDOX_MAX_UV,
+		.min_uV                 = GMT_LDO56_MIN_UV,
+		.max_uV                 = GMT_LDO56_MAX_UV,
 		.apply_uV               = true,
 		.valid_modes_mask       = REGULATOR_MODE_NORMAL
 					| REGULATOR_MODE_STANDBY,
@@ -820,8 +988,8 @@ static struct regulator_init_data gmt_ldo5_power = {
 };
 static struct regulator_init_data gmt_ldo6_power = {
 	.constraints = {
-		.min_uV                 = GMT_LDOX_MIN_UV,
-		.max_uV                 = GMT_LDOX_MAX_UV,
+		.min_uV                 = GMT_LDO56_MIN_UV,
+		.max_uV                 = GMT_LDO56_MAX_UV,
 		.apply_uV               = true,
 		.valid_modes_mask       = REGULATOR_MODE_NORMAL
 					| REGULATOR_MODE_STANDBY,
@@ -833,6 +1001,32 @@ static struct regulator_init_data gmt_ldo6_power = {
 	.consumer_supplies      = &gmt_ldo6_supply,
 };
 #ifdef CONFIG_PM
+static int g2214_read(u8 reg)
+{
+	unsigned int rt_value =0;
+
+	gmt2214_reg_read(g_gmtdata->gmt_dev, reg, &rt_value);
+
+	return rt_value;
+}
+
+static void g2214reg_dump(void)
+{
+	printk("reg A%d: 0x%x\n ", 0, g2214_read(0));
+	printk("reg A%d: 0x%x\n ", 1, g2214_read(1));
+	printk("reg A%d: 0x%x\n ", 2, g2214_read(2));
+	printk("reg A%d: 0x%x\n ", 3, g2214_read(3));
+	printk("reg A%d: 0x%x\n ", 4, g2214_read(4));
+	printk("reg A%d: 0x%x\n ", 5, g2214_read(5));
+	printk("reg A%d: 0x%x\n ", 6, g2214_read(6));
+	printk("reg A%d: 0x%x\n ", 7, g2214_read(7));
+	printk("reg A%d: 0x%x\n ", 8, g2214_read(8));
+	printk("reg A%d: 0x%x\n ", 9, g2214_read(9));
+	printk("reg A%d: 0x%x\n ", 10, g2214_read(10));
+	printk("reg A%d: 0x%x\n ", 11, g2214_read(11));
+	printk("reg A%d: 0x%x\n ", 12, g2214_read(12));
+	printk("reg A%d: 0x%x\n ", 13, g2214_read(13));
+}
 static int gmt_i2c_suspend(struct device *dev)
 {
 	int ret=0;
@@ -841,6 +1035,9 @@ static int gmt_i2c_suspend(struct device *dev)
 	early_suspend_stage = 1;
 
 	printk(KERN_ERR "%s: =============\n", __func__);
+#ifdef G2214_DUMP
+	g2214reg_dump();
+#endif
 
 	if (ret) {
 		printk(KERN_ERR "%s: Buck mode can't set to be auto mode.\n", __func__);
@@ -860,8 +1057,12 @@ static int gmt_i2c_resume(struct device *dev)
 
 	gmt_dc2_update_voltage();
 	gmt_dc1_update_voltage();
+	recovery_ldox_state();
 	g_gmtdata->enabled = 1;
 
+#ifdef G2214_DUMP
+	g2214reg_dump();
+#endif
 	early_suspend_stage = 0;
 	return ret;
 }
@@ -885,20 +1086,23 @@ static int __devinit gmt_pmic_probe(struct platform_device *pdev)
 	gmt->gmt_dev = dev_get_drvdata(pdev->dev.parent);
 	gmt->dev = &pdev->dev;
 
-	gmt->dc1_min_uV = GMT_DC1_MIN_UV;
-	gmt->dc1_max_uV = GMT_DC1_MAX_UV;
-	gmt->dc2_min_uV = GMT_DC2_MIN_UV;
-	gmt->dc2_max_uV = GMT_DC2_MAX_UV;
 	gmt->enabled = 1;
 
-	rdev = &gmt->rdev[0];
-	initdata = &gmt_dc1_power;
 	g_gmtdata = gmt;
+	gmt_version = gmt_read_version();
+	rdev = &gmt->rdev[0];
+	if (gmt_version == 1)
+		initdata = &gmtv1_dc1_power;
+	else
+		initdata = &gmt_dc1_power;
 	rdev = regulator_register(&gmt_reg[0], gmt->dev,
 				initdata,
 				gmt,
 				NULL);
 	rdev = &gmt->rdev[1];
+	if (gmt_version == 1)
+		initdata = &gmtv1_dc2_power;
+	else
 	initdata = &gmt_dc2_power;
 	rdev = regulator_register(&gmt_reg[1], gmt->dev,
 				initdata,
@@ -936,9 +1140,22 @@ static int __devinit gmt_pmic_probe(struct platform_device *pdev)
 				NULL);
 
 	platform_set_drvdata(pdev, gmt);
+	if (gmt_version == 0) {
+		gmt->dc1_min_uV = GMT_DC1_MIN_UV;
+		gmt->dc1_max_uV = GMT_DC1_MAX_UV;
+		gmt->dc2_min_uV = GMT_DC2_MIN_UV;
+		gmt->dc2_max_uV = GMT_DC2_MAX_UV;
+	} else {
+		gmt->dc1_min_uV = GMTV1_DC1_MIN_UV;
+		gmt->dc1_max_uV = GMTV1_DC1_MAX_UV;
+		gmt->dc2_min_uV = GMTV1_DC2_MIN_UV;
+		gmt->dc2_max_uV = GMTV1_DC2_MAX_UV;
+	}
 	gmt_dc2_update_voltage();
 	gmt_dc1_update_voltage();
+	update_ldox_state();
 
+	printk("GMT PMIC ver:0x%x\n", gmt_version);
 	dev_info(gmt->dev, "GMT regulator driver loaded\n");
 	return 0;
 
@@ -956,7 +1173,6 @@ static int __devexit gmt_pmic_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_MTD_WMT_SF
 #define par_len 80
 static int parse_pmic_param(void)
 {
@@ -996,7 +1212,6 @@ static int parse_pmic_param(void)
 	g_pmic_en = 1;
 	return 0;
 }
-#endif
 
 static struct platform_driver gmt_pmic_driver = {
 	.probe	=	gmt_pmic_probe,
@@ -1012,9 +1227,7 @@ static struct platform_driver gmt_pmic_driver = {
 };
 static int __init gmt_pmic_init(void)
 {
-#ifdef CONFIG_MTD_WMT_SF
 	parse_pmic_param();
-#endif
 	printk("GMT2214_PMIC_INIT\n");
 	if (g_pmic_en == 0) {
 		printk("No gmt pmic\n");

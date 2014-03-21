@@ -26,6 +26,7 @@
 /* #define DEBUG */
 /* #define DEBUG_DETAIL */
 /*----------------------- DEPENDENCE -----------------------------------------*/
+#include <linux/gpio.h>
 #include "../lcd.h"
 #include "../vout.h"
 
@@ -69,6 +70,49 @@ int lcd_get_type(void)
 	return lcd_type;
 }
 
+static struct {
+	int gpio;
+	int active;
+} lcd_power;
+
+/*----------------------- Function Body --------------------------------------*/
+static int parse_uboot_param(void)
+{
+	char buf[64];
+	size_t l = sizeof(buf);
+	int ret;
+
+	if (wmt_getsyspara("wmt.lcd.power", buf, &l)) {
+		pr_err("please set wmt.lcd.power\n");
+		return -EINVAL;
+	}
+
+	ret = sscanf(buf, "%d:%d", &lcd_power.gpio, &lcd_power.active);
+	if (ret < 2) {
+		pr_err("Batt: bat env param: %s\n", buf);
+		return -EINVAL;
+	}
+
+	printk("lcd power: gpio-%d, active %d\n", lcd_power.gpio, lcd_power.active);
+
+	ret = gpio_request(lcd_power.gpio, "lcd power");
+	if (ret) {
+		pr_err("request gpio %d failed\n", lcd_power.gpio);
+		return ret;
+	}
+
+	return 0;
+}
+
+void lcd_power_on(bool on)
+{
+	if (lcd_power.gpio < 0)
+		return;
+
+	gpio_direction_output(lcd_power.gpio, on ? lcd_power.active : !lcd_power.active);
+}
+
+/*----------------------- Backlight --------------------------------------*/
 void lcd_set_lvds_id(int id)
 {
 	lcd_lvds_id = id;
@@ -140,15 +184,15 @@ void lcd_set_enable(int enable)
 			p_lcd->initial();
 		else {
 			lcd_enable_signal(1); /* singal enable */
-			REG32_VAL(GPIO_BASE_ADDR + 0x80) |= 0x801;
-			REG32_VAL(GPIO_BASE_ADDR + 0xC0) |= 0x801;
+			//REG32_VAL(GPIO_BASE_ADDR + 0x80) |= 0x801;
+			//REG32_VAL(GPIO_BASE_ADDR + 0xC0) |= 0x801;
 		}
 	} else {
 		if (p_lcd->uninitial)
 			p_lcd->uninitial();
 		else {
 			lcd_enable_signal(0); /* singal disable */
-			REG32_VAL(GPIO_BASE_ADDR + 0xC0) &= ~0x801;
+			//REG32_VAL(GPIO_BASE_ADDR + 0xC0) &= ~0x801;
 		}
 	}
 
@@ -215,10 +259,35 @@ int lcd_panel_register(int no, void (*get_parm)(int mode))
 	return 0;
 } /* End of lcd_device_register */
 
-/*----------------------- vout device plugin --------------------------------*/
+/*----------------------- vout device plugin --------------------------------------*/
 void lcd_set_power_down(int enable)
 {
-	/* lcd enable control by user */
+	static int save_state = -1;
+
+	if (save_state != enable) {
+		/* lcd enable control by user */
+		lcd_power_on(enable ? false : true);
+		lcd_set_enable(enable ? false : true);
+		save_state = enable;
+	}
+}
+
+static void wmt_config_govrh_polar(vout_t *vo)
+{
+	/* wmt.display.polar [clock polar]:[hsync polart]:[vsync polar]*/
+	char buf[64];
+	size_t l = sizeof(buf);
+	int clk_pol, hsync_pol, vsync_pol;
+
+	if (wmt_getsyspara("wmt.display.polar", buf, &l)) {
+		return;
+	}
+
+	sscanf(buf, "%d:%d:%d", &clk_pol, &hsync_pol, &vsync_pol);
+
+	printk("govrh polar: clk-pol %d, hsync %d, vsync %d\n", clk_pol, hsync_pol, vsync_pol);
+	govrh_set_dvo_clock_delay(vo->govr, clk_pol ? 0 : 1, 0);
+	govrh_set_dvo_sync_polar(vo->govr, hsync_pol ? 0 : 1, vsync_pol ? 0 : 1);
 }
 
 int lcd_set_mode(unsigned int *option)
@@ -280,6 +349,8 @@ int lcd_set_mode(unsigned int *option)
 		}
 	} else
 		p_lcd = 0;
+
+	wmt_config_govrh_polar(vo);
 	return 0;
 }
 
@@ -339,6 +410,10 @@ vout_dev_t lcd_vout_dev_ops = {
 
 int lcd_module_init(void)
 {
+	if (parse_uboot_param()) {
+		lcd_power.gpio = -1;
+	}
+
 	vout_device_register(&lcd_vout_dev_ops);
 	return 0;
 } /* End of lcd_module_init */

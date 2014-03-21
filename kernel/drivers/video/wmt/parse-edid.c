@@ -61,6 +61,7 @@ edid_timing_t edid_establish_timing[] = {
 };
 int edid_msg_enable;
 int edid_disable;
+edid_parsed_t edid_parsed;
 
 #undef DBGMSG
 #define DBGMSG(fmt, args...)	if (edid_msg_enable) \
@@ -387,9 +388,10 @@ static int edid_parse_v1(char *edid, edid_info_t *info)
 		goto parse_end;
 	}
 
-#ifdef DEBUG
-	edid_dump(edid);
-#endif
+//#ifdef DEBUG
+	if(edid_msg_enable)
+		edid_dump(edid);
+//#endif
 
 	DBGMSG("[EDID] EDID version:  %d.%d\n",
 		(int)edid[EDID_STRUCT_VERSION],
@@ -424,6 +426,15 @@ static int edid_parse_v1(char *edid, edid_info_t *info)
 	DBGMSG("Identifier \"%s\"\n", monitor_name);
 	DBGMSG("VendorName \"%s\"\n", vendor_sign);
 	DBGMSG("ModelName  \"%s\"\n", monitor_name);
+
+	memset(edid_parsed.tv_name.vendor_name, 0, sizeof(edid_parsed.tv_name.vendor_name));
+	strcpy(edid_parsed.tv_name.vendor_name, vendor_sign);
+
+	memset(edid_parsed.tv_name.monitor_name, 0, sizeof(edid_parsed.tv_name.monitor_name));
+	if(strlen(monitor_name) < MONITOR_NAME_LEN)
+		strcpy(edid_parsed.tv_name.monitor_name, monitor_name);
+	else
+		strncpy(edid_parsed.tv_name.monitor_name, monitor_name, MONITOR_NAME_LEN - 1);
 
 	parse_dpms_capabilities(edid[DPMS_FLAGS]);
 
@@ -583,6 +594,10 @@ static int edid_parse_CEA(char *edid, edid_info_t *info)
 	char *block, *block_end;
 	char checksum = 0;
 	int i, len;
+	char audio_format;
+	int num = 0, sadcnt_in_block;
+
+	memset(edid_parsed.sad, 0, sizeof(edid_parsed.sad));
 
 	if (edid[0] != 0x2)
 		return -1;
@@ -591,13 +606,15 @@ static int edid_parse_CEA(char *edid, edid_info_t *info)
 		checksum += edid[i];
 
 	if (checksum != 0) {
-		DPRINT("*E* CEA EDID checksum failed - data is corrupt\n");
+		DPRINT("*E* CEA EDID checksum (0x%02x) failed - data is corrupt\n", checksum);
+		info->option |= (EDID_OPT_HDMI + EDID_OPT_AUDIO);
 		return -1;
 	}
 
-#ifdef DEBUG
-	edid_dump(edid);
-#endif
+//#ifdef DEBUG
+	if(edid_msg_enable)
+		edid_dump(edid);
+//#endif
 
 	DBGMSG("[EDID] CEA EDID Version %d.%d\n", edid[0], edid[1]);
 
@@ -616,78 +633,107 @@ static int edid_parse_CEA(char *edid, edid_info_t *info)
 		len = block[0] & 0x1F;
 		switch (((block[0] & 0xE0)>>5)) {
 		case 1:	/* Audio Data Block */
-			DBGMSG("Audio Data Block\n");
-			switch (((block[1] & 0x78) >> 3)) {
-			default:
-			case 0: /* reserved */
-			case 15:/* reserved */
-				DBGMSG("\t Reserved Audio Fmt\n");
-				break;
-			case 1: /* LPCM */
-				DBGMSG("\t Audio Fmt LPCM\n");
-				break;
-			case 2: /* AC3 */
-				DBGMSG("\t Audio Fmt AC3\n");
-				break;
-			case 3: /* MPEG1 */
-				DBGMSG("\t Audio Fmt MPEG1\n");
-				break;
-			case 4: /* MP3 */
-				DBGMSG("\t Audio Fmt MP3\n");
-				break;
-			case 5: /* MPEG2 */
-				DBGMSG("\t Audio Fmt MPEG2\n");
-				break;
-			case 6: /* AAC */
-				DBGMSG("\t Audio Fmt AAC\n");
-				break;
-			case 7: /* DTS */
-				DBGMSG("\t Audio Fmt DTS\n");
-				break;
-			case 8: /* ATRAC */
-				DBGMSG("\t Audio Fmt ATRAC\n");
-				break;
-			case 9: /* One bit audio */
-				DBGMSG("\t Audio Fmt ONE BIT AUDIO\n");
-				break;
-			case 10:/* Dolby */
-				DBGMSG("\t Audio Fmt DOLBY\n");
-				break;
-			case 11:/* DTS-HD */
-				DBGMSG("\t Audio Fmt DTS-HD\n");
-				break;
-			case 12:/* MAT (MLP) */
-				DBGMSG("\t Audio Fmt MAT\n");
-				break;
-			case 13:/* DST */
-				DBGMSG("\t Audio Fmt DST\n");
-				break;
-			case 14:/* WMA Pro */
-				DBGMSG("\t Audio Fmt WMA+\n");
-				break;
-			}
+			DBGMSG("Audio Data Block (0x%02X)\n", block[0]);
+			info->option |= EDID_OPT_AUDIO;
+			sadcnt_in_block = len / 3;
 
-			DBGMSG("\t Max channel %d\n", (block[1] & 0x7) + 1);
-			DBGMSG("\t %s support 32 KHz\n",
-				(block[2] & 0x1) ? "" : "no");
-			DBGMSG("\t %s support 44 KHz\n",
-				(block[2] & 0x2) ? "" : "no");
-			DBGMSG("\t %s support 48 KHz\n",
-				(block[2] & 0x4) ? "" : "no");
-			DBGMSG("\t %s support 88 KHz\n",
-				(block[2] & 0x8) ? "" : "no");
-			DBGMSG("\t %s support 96 KHz\n",
-				(block[2] & 0x10) ? "" : "no");
-			DBGMSG("\t %s support 176 KHz\n",
-				(block[2] & 0x20) ? "" : "no");
-			DBGMSG("\t %s support 192 KHz\n",
-				(block[2] & 0x40) ? "" : "no");
-			DBGMSG("\t %s support 16 bit\n",
-				(block[3] & 0x1) ? "" : "no");
-			DBGMSG("\t %s support 20 bit\n",
-				(block[3] & 0x2) ? "" : "no");
-			DBGMSG("\t %s support 24 bit\n",
-				(block[3] & 0x4) ? "" : "no");
+			for(i = 0; i < sadcnt_in_block; i++){
+				if(num < AUD_SAD_NUM) {
+					edid_parsed.sad[num].flag = 1;
+					edid_parsed.sad[num].sad_byte[0] = block[i * 3 + 1];
+					edid_parsed.sad[num].sad_byte[1] = block[i * 3 + 2];
+					edid_parsed.sad[num].sad_byte[2] = block[i * 3 + 3];
+					num++;
+				} else {
+					DPRINT("Lose SAD info: 0x%02X 0x%02X 0x%02X\n",
+						block[i * 3 + 1], block[i * 3 + 2], block[i * 3 + 3]);
+				}
+
+				DBGMSG("\t ======== SDA %d ========\n", i);
+				DBGMSG("\t SDA Data: 0x%02X 0x%02X 0x%02X\n",
+					block[i * 3 + 1], block[i * 3 + 2], block[i * 3 + 3]);
+
+				audio_format = (block[i * 3 + 1] & 0x78) >> 3;
+				switch (audio_format) {
+				default:
+				case 0: /* reserved */
+				case 15:/* reserved */
+					DBGMSG("\t Reserved Audio Fmt\n");
+				break;
+				case 1: /* LPCM */
+					DBGMSG("\t Audio Fmt: LPCM\n");
+				break;
+				case 2: /* AC3 */
+					DBGMSG("\t Audio Fmt: AC3\n");
+				break;
+				case 3: /* MPEG1 */
+					DBGMSG("\t Audio Fmt: MPEG1\n");
+				break;
+				case 4: /* MP3 */
+					DBGMSG("\t Audio Fmt: MP3\n");
+				break;
+				case 5: /* MPEG2 */
+					DBGMSG("\t Audio Fmt: MPEG2\n");
+				break;
+				case 6: /* AAC */
+					DBGMSG("\t Audio Fmt: AAC\n");
+				break;
+				case 7: /* DTS */
+					DBGMSG("\t Audio Fmt: DTS\n");
+				break;
+				case 8: /* ATRAC */
+					DBGMSG("\t Audio Fmt: ATRAC\n");
+				break;
+				case 9: /* One bit audio */
+					DBGMSG("\t Audio Fmt: ONE BIT AUDIO\n");
+				break;
+				case 10:/* Dolby */
+					DBGMSG("\t Audio Fmt: DOLBY\n");
+				break;
+				case 11:/* DTS-HD */
+					DBGMSG("\t Audio Fmt: DTS-HD\n");
+				break;
+				case 12:/* MAT (MLP) */
+					DBGMSG("\t Audio Fmt: MAT\n");
+				break;
+				case 13:/* DST */
+					DBGMSG("\t Audio Fmt: DST\n");
+				break;
+				case 14:/* WMA Pro */
+					DBGMSG("\t Audio Fmt: WMA Pro\n");
+				break;
+				}
+
+				DBGMSG("\t Max channel: %d\n", (block[i * 3 + 1] & 0x7) + 1);
+				DBGMSG("\t %s support 32 KHz\n",
+					(block[i * 3 + 2] & 0x1) ? "" : "no");
+				DBGMSG("\t %s support 44 KHz\n",
+					(block[i * 3 + 2] & 0x2) ? "" : "no");
+				DBGMSG("\t %s support 48 KHz\n",
+					(block[i * 3 + 2] & 0x4) ? "" : "no");
+				DBGMSG("\t %s support 88 KHz\n",
+					(block[i * 3 + 2] & 0x8) ? "" : "no");
+				DBGMSG("\t %s support 96 KHz\n",
+					(block[i * 3 + 2] & 0x10) ? "" : "no");
+				DBGMSG("\t %s support 176 KHz\n",
+					(block[i * 3 + 2] & 0x20) ? "" : "no");
+				DBGMSG("\t %s support 192 KHz\n",
+					(block[i * 3 + 2] & 0x40) ? "" : "no");
+				if(audio_format == 1) { /* For LPCM */
+					DBGMSG("\t %s support 16 bit\n",
+						(block[i * 3 + 3] & 0x1) ? "" : "no");
+					DBGMSG("\t %s support 20 bit\n",
+						(block[i * 3 + 3] & 0x2) ? "" : "no");
+					DBGMSG("\t %s support 24 bit\n",
+						(block[i * 3 + 3] & 0x4) ? "" : "no");
+				} else if(audio_format >= 2 && audio_format <= 8) { /* From AC3 to ATRAC */
+					DBGMSG("\t Max bitrate: %d kbit/s\n", block[i * 3 + 3] * 8);
+				}
+				else if(audio_format >= 9 && audio_format <= 14) { /* From One-bit-audio to WMA Pro*/
+					DBGMSG("\t Audio Format Code dependent value: 0x%02X\n", block[i * 3 + 3]);
+				}
+				DBGMSG("\t ========================\n");
+			}
 			break;
 		case 2:	/* Video Data Block */
 			DBGMSG("Video Data Block\n");

@@ -28,12 +28,17 @@
 #include <linux/platform_device.h>
 
 #include <mach/hardware.h>
+#include <mach/wmt_secure.h>
 #include <asm/system.h>
 #include <asm/pgtable.h>
 #include <asm/mach/map.h>
 #include <asm/irq.h>
 #include <asm/sizes.h>
 #include <linux/i2c.h>
+
+#include <linux/mfd/wm8994/pdata.h>
+#include <linux/regulator/fixed.h>
+#include <linux/regulator/machine.h>
 
 #include "generic.h"
 #include <linux/spi/spi.h>
@@ -53,6 +58,7 @@ extern void enable_user_access(void);
 
 /* TODO*/
 #define PMHC_HIBERNATE 0x205
+extern void __init wmt_gpio_init(void);
 
 extern void wmt_power_up_debounce_value(void);
 extern void wmt_restart(char mode, const char *cmd);
@@ -98,37 +104,25 @@ static void wmt_power_off(void)
 #endif		
 		
 	//PMWTC_VAL = 0x2000;//DCDET falling
-	*(volatile unsigned char *)0xfe13005c = 0x0;
-	if ((*(volatile unsigned int *)0xfe120000 & 0xffff0000) == 0x34980000) {
-		if ((*(volatile unsigned int *)0xfe120000 & 0xffff) >= 0x0103) {
-			PMWTC_VAL = 0x00004000;
-			mdelay(1);
-			PMWT_VAL = 0x40000000;
-			mdelay(1);
-			PMWS_VAL = PMWS_VAL;
-			mdelay(1);
-			PMWE_VAL = 0x08004080;//DCDET + PWRBTN
-			mdelay(1);
-			WK_TRG_EN_VAL = 0x08004080;//DCDET + PWRBTN
-		} else {
-			PMWT_VAL = 0x40000000;
-			mdelay(1);
-			PMWS_VAL = PMWS_VAL;
-			mdelay(1);
-			PMWE_VAL = 0x00004080;//DCDET + PWRBTN
-			mdelay(1);
-			WK_TRG_EN_VAL = 0x00004080;//DCDET + PWRBTN
-		}
-		
-		
-		if (DCDET_STS_VAL & 0x100)
-			PMHC_VAL = PMHC_SUSPEND;
-		else			
-			PMHC_VAL = PMHC_HIBERNATE;
-	} else {
-		PMHC_VAL = PMHC_HIBERNATE;
-	}
+	*(unsigned char *)0xfe13005c = 0x0;
+#if 0	
+	PMWT_VAL = 0x40000000;
+	mdelay(1);
+	PMWS_VAL = PMWS_VAL;
+	mdelay(1);
+	PMWE_VAL = 0x00004080;//DCDET + PWRBTN
+	mdelay(1);
+	WK_TRG_EN_VAL = 0x00004080;//DCDET + PWRBTN
 
+	if (DCDET_STS_VAL & 0x100)
+		PMHC_VAL = PMHC_SUSPEND;
+//#else
+	if (DCDET_STS_VAL & 0x100)
+		PMSR_VAL = PMSR_SWR;
+		
+	else		
+#endif		
+	PMHC_VAL = PMHC_HIBERNATE;
 	//asm("mcr%? p15, 0, %0, c7, c0, 4" : : "r" (0));		/* Force ARM to idle mode*/
 	do {
 		asm("wfi" : : "r" (0));		/* Force ARM to idle mode*/
@@ -259,7 +253,15 @@ static struct resource wmt_i2s_resources[] = {
     },
 };
 
+static struct resource wmt_pcm_resources[] = {
+    [0] = {
+		.start  = 0xD82D0000,
+		.end    = 0xD82D0000 + 0x4f,
+		.flags  = IORESOURCE_MEM,
+    },
+};
 static u64 wmt_i2s_dma_mask = 0xffffffffUL;
+static u64 wmt_pcm_dma_mask = 0xffffffffUL;
 
 static struct platform_device wmt_i2s_device = {
 	.name           = "wmt-i2s",
@@ -272,35 +274,8 @@ static struct platform_device wmt_i2s_device = {
 	.resource       = wmt_i2s_resources,
 };
 
-static struct platform_device wmt_aud_pcm_device = {
-	.name           = "wmt-audio-pcm",
-	.id             = 0,
-};
-
-/*static struct platform_device wmt_aud_soc_device = {
-	.name           = "wmt-audio-soc",
-	.id             = 0,
-};*/
-
-static struct platform_device wmt_i2s_hwdac_device = {
-	.name           = "wmt-i2s-hwdac",
-	.id             = 0,
-};
-
-
-/*
-static struct resource wmt_pcm_resources[] = {
-    [0] = {
-		.start  = 0xD82D0000,
-		.end    = 0xD82Dffff,
-		.flags  = IORESOURCE_MEM,
-    },
-};
-
-static u64 wmt_pcm_dma_mask = 0xffffffffUL;
-
-static struct platform_device wmt_pcm_device = {
-	.name           = "pcm",
+static struct platform_device wmt_pcm_controller_device = {
+	.name           = "wmt-pcm-controller",
 	.id             = 0,
 	.dev            = {
 	.dma_mask 		= &wmt_pcm_dma_mask,
@@ -309,7 +284,41 @@ static struct platform_device wmt_pcm_device = {
 	.num_resources  = ARRAY_SIZE(wmt_pcm_resources),
 	.resource       = wmt_pcm_resources,
 };
-*/
+
+static struct platform_device wmt_pcm_dma_device = {
+	.name           = "wmt-pcm-dma",
+	.id             = 0,
+};
+static struct platform_device wmt_aud_pcm_device = {
+	.name           = "wmt-audio-pcm",
+	.id             = 0,
+};
+
+static struct platform_device wmt_i2s_hwdac_device = {
+	.name           = "wmt-i2s-hwdac",
+	.id             = 0,
+};
+
+static struct platform_device wmt_switch_device = {
+	.name = "wmt-switch",
+	.id   = 0,
+};
+
+static struct resource wmt_pwm_resources[] = {
+    [0] = {
+		.start  = 0xD8220000,
+		.end    = 0xD8220000 + 0x44,
+		.flags  = IORESOURCE_MEM,
+    },
+};
+
+struct platform_device wm8880_device_pwm = {
+	.name		= "wm8880-pwm",
+	.id		= 0,
+	.num_resources     = ARRAY_SIZE(wmt_pwm_resources),
+	.resource          = wmt_pwm_resources,
+};
+
 #ifdef CONFIG_WMT_NEWSPI_SUPPORT
 static struct spi_board_info wmt_spi_board_info[] = {
 };
@@ -427,8 +436,126 @@ static struct platform_device wmt_mali_drm_device = {
 };
 #endif
 
+#ifdef CONFIG_I2S_CODEC_WM8994
+static struct regulator_consumer_supply wm8994_fixed_voltage0_supplies[] = {
+	REGULATOR_SUPPLY("DBVDD", "4-001a"),
+	REGULATOR_SUPPLY("AVDD2", "4-001a"),
+	REGULATOR_SUPPLY("CPVDD", "4-001a"),
+};
+
+static struct regulator_consumer_supply wm8994_fixed_voltage1_supplies[] = {
+	REGULATOR_SUPPLY("SPKVDD1", "4-001a"),
+	REGULATOR_SUPPLY("SPKVDD2", "4-001a"),
+};
+
+static struct regulator_init_data wm8994_fixed_voltage0_init_data = {
+	.constraints = {
+		.always_on = 1,
+	},
+	.num_consumer_supplies	= ARRAY_SIZE(wm8994_fixed_voltage0_supplies),
+	.consumer_supplies	= wm8994_fixed_voltage0_supplies,
+};
+
+static struct regulator_init_data wm8994_fixed_voltage1_init_data = {
+	.constraints = {
+		.always_on = 1,
+	},
+	.num_consumer_supplies	= ARRAY_SIZE(wm8994_fixed_voltage1_supplies),
+	.consumer_supplies	= wm8994_fixed_voltage1_supplies,
+};
+
+static struct fixed_voltage_config wm8994_fixed_voltage0_config = {
+	.supply_name	= "VCC_1.8V_PDA",
+	.microvolts	= 1800000,
+	.gpio		= -EINVAL,
+	.init_data	= &wm8994_fixed_voltage0_init_data,
+};
+
+static struct fixed_voltage_config wm8994_fixed_voltage1_config = {
+	.supply_name	= "V_BAT",
+	.microvolts	= 3700000,
+	.gpio		= -EINVAL,
+	.init_data	= &wm8994_fixed_voltage1_init_data,
+};
+
+static struct platform_device wm8994_fixed_voltage0 = {
+	.name		= "reg-fixed-voltage",
+	.id		= 0,
+	.dev		= {
+		.platform_data	= &wm8994_fixed_voltage0_config,
+	},
+};
+
+static struct platform_device wm8994_fixed_voltage1 = {
+	.name		= "reg-fixed-voltage",
+	.id		= 1,
+	.dev		= {
+		.platform_data	= &wm8994_fixed_voltage1_config,
+	},
+};
+
+static struct regulator_consumer_supply wm8994_avdd1_supply =
+	REGULATOR_SUPPLY("AVDD1", "4-001a");
+
+static struct regulator_consumer_supply wm8994_dcvdd_supply =
+	REGULATOR_SUPPLY("DCVDD", "4-001a");
+
+static struct regulator_init_data wm8994_ldo1_data = {
+	.constraints	= {
+		.name		= "AVDD1_3.0V",
+	},
+	.num_consumer_supplies	= 1,
+	.consumer_supplies	= &wm8994_avdd1_supply,
+};
+
+static struct regulator_init_data wm8994_ldo2_data = {
+	.constraints	= {
+		.name		= "DCVDD_1.0V",
+	},
+	.num_consumer_supplies	= 1,
+	.consumer_supplies	= &wm8994_dcvdd_supply,
+};
+
+static struct wm8994_pdata wm8994_platform_data = {
+	/* configure gpio1 function for ADCLRCLK */
+	.gpio_defaults[0] = 0x0100,
+	/* configure gpio2 & gpio6 function for gpio */
+	.gpio_defaults[1] = 0x8101, // read-only
+	.gpio_defaults[5] = 0x0001, // output
+	/* configure gpio3/4/5/7 function for AIF2 voice */
+	.gpio_defaults[2] = 0x8100,
+	.gpio_defaults[3] = 0x8100,
+	.gpio_defaults[4] = 0x8100,
+	.gpio_defaults[6] = 0x0100,
+	/* configure gpio8/9/10/11 function for AIF3 BT */
+	.gpio_defaults[7] = 0x8100,
+	.gpio_defaults[8] = 0x0100,
+	.gpio_defaults[9] = 0x0100,
+	.gpio_defaults[10] = 0x0100,
+	.ldo[0]	= { 0, &wm8994_ldo1_data },	/* XM0FRNB_2 */
+	.ldo[1]	= { 0, &wm8994_ldo2_data },
+};
+
+static struct i2c_board_info wm8994_i2c_dev[] __initdata = {
+	{I2C_BOARD_INFO("wm8994", 0x1a), .platform_data	= &wm8994_platform_data,},
+};
+#endif
+
 #ifdef CONFIG_CACHE_L2X0
 extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
+static	void __iomem *l2x0_base;
+static DEFINE_RAW_SPINLOCK(l2x0_lock);
+
+static void wmt_l2x0_disable(void)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&l2x0_lock, flags);
+//	__l2x0_flush_all();
+	wmt_smc(WMT_SMC_CMD_PL310CTRL, 0);
+	dsb();
+	raw_spin_unlock_irqrestore(&l2x0_lock, flags);
+}
 #endif
 
 static struct platform_device *wmt_devices[] __initdata = {
@@ -443,13 +570,13 @@ static struct platform_device *wmt_devices[] __initdata = {
 	&wmt_nor_device,
 #endif
 	&wmt_nand_device,
-	/*&wmt_aud_soc_device,*/
 	&wmt_i2s_device,
+	&wmt_pcm_controller_device,
+	&wmt_pcm_dma_device,
 	&wmt_aud_pcm_device,
 	&wmt_i2s_hwdac_device,
-	/*
-	&wmt_pcm_device,
-	*/
+//	&wmt_pcm_device,
+	&wmt_switch_device,
 #ifdef CONFIG_WMT_NEWSPI_SUPPORT
 	&wmt_spi_device,
 #endif
@@ -459,7 +586,48 @@ static struct platform_device *wmt_devices[] __initdata = {
 #ifdef CONFIG_DRM_MALI
 	&wmt_mali_drm_device,
 #endif
+#ifdef CONFIG_I2S_CODEC_WM8994
+	&wm8994_fixed_voltage0,
+	&wm8994_fixed_voltage1,
+#endif
+	&wm8880_device_pwm,
 };
+
+#ifdef CONFIG_VT1603_IOCTRL_SPI
+static struct wmt_spi_slave vt1603_codec_info = {
+	.dma_en        = SPI_DMA_DISABLE,
+	.bits_per_word = 8,
+};
+static struct spi_board_info vt1603_spi_board_info[] __initdata = {
+	{
+		.modalias               = "vt1609",
+		.bus_num                = 0,
+		.chip_select            = 0,
+		.max_speed_hz           = 12000000,
+		.irq                    = -1,
+		.mode = SPI_CLK_MODE3,
+		.controller_data = &vt1603_codec_info,
+	},
+};
+#endif
+
+
+static struct i2c_board_info cp2682_i2c_dev[] __initdata = {
+	{I2C_BOARD_INFO("cp2682", (0x2c)),},
+};
+
+static char ns_printk_buf[1024];
+void sprintk(unsigned int buf, unsigned int len)
+{
+	local_irq_disable();
+        printk(ns_printk_buf);
+	wmt_smc(WMT_SMC_CMD_PRINTK_RET, 0);
+}
+void notify_log_buf()
+{
+	wmt_smc(WMT_SMC_CMD_LOGBUFOK, (unsigned int)sprintk);
+	wmt_smc(WMT_SMC_CMD_LOGBUF_ADDR, (unsigned int)virt_to_phys(ns_printk_buf));
+}
 
 static void wmt_default_idle(void)
 {
@@ -478,15 +646,18 @@ static int __init wmt_init(void)
 	/* Add End */
 
 #ifdef CONFIG_CACHE_L2X0
-	void __iomem *l2x0_base;
-	__u32 power_cntrl = 0;
+	__u32 power_ctrl = 0;
 	unsigned int onoff = 0;
 	unsigned int aux = 0x3E440000;
 	unsigned int prefetch_ctrl = 0x70000007;
 	unsigned int en_static_address_filtering = 0;
 	unsigned int address_filtering_start = 0xD8000000;
 	unsigned int address_filtering_end = 0xD9000000;
+	unsigned int cpu_trustzone_enabled = 0;
+	unsigned long flags;
 #endif
+
+	wmt_gpio_init();
 
 	pm_power_off = wmt_power_off;
 	pm_idle = wmt_default_idle;
@@ -498,29 +669,73 @@ static int __init wmt_init(void)
 #ifdef CONFIG_WMT_NEWSPI1_SUPPORT
 	spi_register_board_info(wmt_spi1_board_info, ARRAY_SIZE(wmt_spi1_board_info));
 #endif
+#ifdef CONFIG_VT1603_IOCTRL_SPI
+	spi_register_board_info(vt1603_spi_board_info, ARRAY_SIZE(vt1603_spi_board_info));
+#endif
+
+#ifdef CONFIG_I2S_CODEC_WM8994
+	i2c_register_board_info(4, wm8994_i2c_dev, ARRAY_SIZE(wm8994_i2c_dev));
+#endif
+
 
 #ifdef CONFIG_CACHE_L2X0
 	if (wmt_getsyspara("wmt.l2c.param",buf,&varlen) == 0)
 		sscanf(buf,"%d:%x:%x:%d:%x:%x",&onoff, &aux, &prefetch_ctrl, &en_static_address_filtering, &address_filtering_start, &address_filtering_end);
 
+	if (wmt_getsyspara("wmt.secure.param",buf,&varlen) == 0)
+		sscanf(buf,"%d",&cpu_trustzone_enabled);
+	if(cpu_trustzone_enabled != 1)
+		cpu_trustzone_enabled = 0;
+
 	if (onoff == 1) {
 		l2x0_base = ioremap(0xD9000000, SZ_4K);
 
-		if (en_static_address_filtering == 1) {
-			writel_relaxed(address_filtering_end, l2x0_base + 0xC04);
-			writel_relaxed((address_filtering_start | 0x01), l2x0_base + 0xC00);
+
+		if(cpu_trustzone_enabled == 0)
+		{
+			if (en_static_address_filtering == 1) {
+				writel_relaxed(address_filtering_end, l2x0_base + 0xC04);
+				writel_relaxed((address_filtering_start | 0x01), l2x0_base + 0xC00);
+			}
+			
+			writel_relaxed(0x110, l2x0_base + L2X0_TAG_LATENCY_CTRL);
+			writel_relaxed(0x110, l2x0_base + L2X0_DATA_LATENCY_CTRL);
+	
+			power_ctrl = readl_relaxed(l2x0_base + L2X0_POWER_CTRL) | L2X0_DYNAMIC_CLK_GATING_EN | L2X0_STNDBY_MODE_EN;
+			writel_relaxed(power_ctrl, l2x0_base + L2X0_POWER_CTRL);        
+	
+			writel_relaxed(prefetch_ctrl, l2x0_base + L2X0_PREFETCH_CTRL);         
 		}
-		
-		writel_relaxed(0x110, l2x0_base + L2X0_TAG_LATENCY_CTRL);
-		writel_relaxed(0x110, l2x0_base + L2X0_DATA_LATENCY_CTRL);
+		else
+		{
+			if (en_static_address_filtering == 1) {
+				wmt_smc(WMT_SMC_CMD_PL310FILTER_END, address_filtering_end);
+				wmt_smc(WMT_SMC_CMD_PL310FILTER_START, (address_filtering_start | 0x01));
+			}
 
-		power_cntrl = readl_relaxed(l2x0_base + L2X0_POWER_CTRL) | L2X0_DYNAMIC_CLK_GATING_EN | L2X0_STNDBY_MODE_EN;
-		writel_relaxed(power_cntrl, l2x0_base + L2X0_POWER_CTRL);        
+			wmt_smc(WMT_SMC_CMD_PL310TAG_LATENCY, 0x110);
+			wmt_smc(WMT_SMC_CMD_PL310DATA_LATENCY, 0x110);
+			power_ctrl = readl_relaxed(l2x0_base + L2X0_POWER_CTRL) | L2X0_DYNAMIC_CLK_GATING_EN | L2X0_STNDBY_MODE_EN;
+			wmt_smc(WMT_SMC_CMD_PL310POWER, power_ctrl);
 
-		writel_relaxed(prefetch_ctrl, l2x0_base + L2X0_PREFETCH_CTRL);                
+			wmt_smc(WMT_SMC_CMD_PL310PREFETCH, prefetch_ctrl);
 
-		/* 256KB (32KB/way) 8-way associativity */
+			raw_spin_lock_irqsave(&l2x0_lock, flags);
+			writel_relaxed(0xffff, l2x0_base + L2X0_INV_WAY);
+			while ( readl_relaxed(l2x0_base + L2X0_INV_WAY)  & 0xffff)
+				cpu_relax();
+			writel_relaxed(0, l2x0_base + L2X0_CACHE_SYNC);
+			raw_spin_unlock_irqrestore(&l2x0_lock, flags);
+			
+			/* enable L2X0 */
+			wmt_smc(WMT_SMC_CMD_PL310CTRL, 1);
+		}
+
+		/* 512KB (32KB/way) 16-way associativity */
 		l2x0_init(l2x0_base, aux, 0);
+		
+		if(cpu_trustzone_enabled != 0)
+			outer_cache.disable = wmt_l2x0_disable;
 	}
 #endif
 
@@ -534,6 +749,8 @@ static int __init wmt_init(void)
 #endif
 /* Add End */
 
+	if(cpu_trustzone_enabled == 1)
+		notify_log_buf();//Lch for SecureOS_printk
 	return platform_add_devices(wmt_devices, ARRAY_SIZE(wmt_devices));
 }
 

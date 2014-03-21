@@ -29,6 +29,8 @@
 #include <linux/dma-mapping.h>
 #include <linux/sched.h>
 
+#include <mach/wmt_env.h>
+
 #include <mach/hardware.h>
 #include <mach/wmt_gpio.h>
 
@@ -45,10 +47,11 @@
 #define spi_trace()
 #endif
 
-#define GPIO_SPI1_SS0   BIT3
-#define GPIO_SPI1_MOSI  BIT7
-#define GPIO_SPI1_MISO  BIT1
-#define GPIO_SPI1_CLK   BIT5
+#define GPIO_SPI1_MISO  BIT2
+#define GPIO_SPI1_MOSI  BIT3
+#define GPIO_SPI1_CLK   BIT6
+#define GPIO_SPI1_SS0   BIT7
+
 #define GPIO_SPI1_SS1   BIT7
 #define GPIO_SPI1_SS2   BIT0
 #define GPIO_SPI1_SS3   BIT1
@@ -145,21 +148,23 @@ static inline void wmt_spi_clock_enable(void)
 	int timeout = POLLING_SPI_REG_TIMEOUT;
 
 	/*Enable SPI function and disable GPIO function for related SPI pin*/
-	GPIO_CTRL_GP23_UART_2_3_BYTE_VAL &= ~(GPIO_SPI1_CLK |
-			GPIO_SPI1_MISO |
-			GPIO_SPI1_MOSI);
+	GPIO_CTRL_GP18_UART_BYTE_VAL	&= ~(GPIO_SPI1_CLK | GPIO_SPI1_MISO |
+					     GPIO_SPI1_MOSI | GPIO_SPI1_SS0);
 
-	GPIO_PULL_EN_GP23_UART_2_3_BYTE_VAL |= (GPIO_SPI1_CLK |
-				GPIO_SPI1_MISO |
-				GPIO_SPI1_MOSI);
+	/* miso/mosi : pull up
+	 *       clk : pull down
+	 */
+	PULL_EN_GP18_UART_BYTE_VAL	|= (GPIO_SPI1_CLK | GPIO_SPI1_MISO | GPIO_SPI1_MOSI);
+	PULL_CTRL_GP18_UART_BYTE_VAL	|= (GPIO_SPI1_MISO |GPIO_SPI1_MOSI);
+	PULL_CTRL_GP18_UART_BYTE_VAL	&= ~(GPIO_SPI1_CLK);
 
-	GPIO_PULL_CTRL_GP23_UART_2_3_BYTE_VAL |= (GPIO_SPI1_MISO |GPIO_SPI1_MOSI);
-	GPIO_PULL_CTRL_GP23_UART_2_3_BYTE_VAL &= ~(GPIO_SPI1_CLK);
 	if (g_use_ss0) {
-		GPIO_CTRL_GP23_UART_2_3_BYTE_VAL &= ~GPIO_SPI1_SS0;
-		GPIO_PULL_EN_GP23_UART_2_3_BYTE_VAL |= GPIO_SD0_DATA0;
-		GPIO_PULL_CTRL_GP23_UART_2_3_BYTE_VAL |= GPIO_SD0_DATA0;
+		GPIO_CTRL_GP18_UART_BYTE_VAL	&= ~GPIO_SPI1_SS0;
+		PULL_EN_GP18_UART_BYTE_VAL	|= GPIO_SPI1_SS0;
+		PULL_CTRL_GP18_UART_BYTE_VAL	|= GPIO_SPI1_SS0;
 	}
+
+#if 0
 	if (g_use_ss1) {
 		GPIO_CTRL_GP0_BYTE_VAL &= ~GPIO_SPI1_SS1;
 		GPIO_PULL_EN_GP0_BYTE_VAL |= GPIO_SPI1_SS1;
@@ -175,7 +180,9 @@ static inline void wmt_spi_clock_enable(void)
 		GPIO_PULL_EN_GP1_BYTE_VAL |= GPIO_SPI1_SS3;
 		GPIO_PULL_CTRL_GP1_BYTE_VAL |= GPIO_SPI1_SS3;
 	}
-	GPIO_PIN_SHARING_SEL_4BYTE_VAL |= BIT8;
+#endif
+
+	PIN_SHARING_SEL_4BYTE_VAL |= BIT10;
 
 	/* clock open */
 	auto_pll_divisor(DEV_SPI1, CLK_ENABLE, 0, 0);
@@ -1323,9 +1330,24 @@ static struct platform_driver wmt_spi_driver = {
 	.remove		= __devexit_p(wmt_spi_remove),
 };
 
+static int parse_spi1_param(void)
+{
+	char buf[64];
+	size_t l = sizeof(buf);
+	int uart_spi_sel = 0;
+
+	if (wmt_getsyspara("wmt.spi1.param", buf, &l) == 0) {
+		sscanf(buf, "%d", &uart_spi_sel);
+	}
+
+	pr_info("spi1 %s.\n", uart_spi_sel ? "available" : "invalid");
+	return uart_spi_sel;
+}
+
 static int __init wmt_spi_init(void)
 {
-	return platform_driver_probe(&wmt_spi_driver, wmt_spi_probe);
+	return (parse_spi1_param()) ?
+		platform_driver_probe(&wmt_spi_driver, wmt_spi_probe) : 0;
 }
 module_init(wmt_spi_init);
 

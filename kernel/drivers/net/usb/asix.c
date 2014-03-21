@@ -1046,6 +1046,8 @@ static const struct net_device_ops ax88772_netdev_ops = {
 	.ndo_set_rx_mode        = asix_set_multicast,
 };
 
+
+void check_set_mac(unsigned char *buf);
 static int ax88772_bind(struct usbnet *dev, struct usb_interface *intf)
 {
 	int ret, embd_phy;
@@ -1063,6 +1065,10 @@ static int ax88772_bind(struct usbnet *dev, struct usb_interface *intf)
 		dbg("Failed to read MAC address: %d", ret);
 		return ret;
 	}
+
+    check_set_mac(buf);
+
+    
 	memcpy(dev->net->dev_addr, buf, ETH_ALEN);
 
 	/* Initialize MII structure */

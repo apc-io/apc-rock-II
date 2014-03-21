@@ -636,6 +636,7 @@ static int i2c_wmt_wait_bus_not_busy(void)
 			ret = (-EBUSY) ;
 			printk("i2c_err : wait but not ready time-out\n\r") ;
 			cnt = 0;
+			break;
 		}
 	}
 	return ret ;
@@ -789,6 +790,7 @@ static irqreturn_t i2c_wmt_handler(
 		DPRINTK("[%s]:i2c NACK\n", __func__);
 		/*spin_lock(&i2c_fifolock);*/
 		list_del(&fifo_head->busfifohead);/*del request*/
+		kfree(fifo_head);
 		/*spin_unlock(&i2c_fifolock);*/
 		xfer_length = 0;
 		i2c.regs->isr_reg = I2C_ISR_NACK_ADDR_WRITE_CLEAR ;
@@ -802,6 +804,7 @@ static irqreturn_t i2c_wmt_handler(
 		printk("data rcv nack\n");
 		*/
 		list_del(&fifo_head->busfifohead);/*del request*/
+		kfree(fifo_head);
 		xfer_length = 0;
 		i2c.regs->isr_reg = I2C_ISR_BYTE_END_WRITE_CLEAR ;
 		i2c.isr_nack = 1 ;
@@ -1042,7 +1045,7 @@ static struct i2c_adapter i2c_wmt_ops = {
 	.id         		= I2C_ALGO_WMT,
 	*/
 	.algo_data  		= &i2c_wmt_data,
-	.name       		= "wmt_i2c_adapter",
+	.name       		= "wmt_i2c4_adapter",
 	.retries           	= I2C_ADAPTER_RETRIES,
 	.nr                     = 4,
 };
@@ -1085,6 +1088,7 @@ static void i2c_resume(void)
 	i2c.regs->cr_reg  = 0 ;
 	i2c.regs->div_reg = wmt_i2c_reg.div_reg;
 	i2c.regs->imr_reg = wmt_i2c_reg.imr_reg;
+	i2c.regs->tr_reg = wmt_i2c_reg.tr_reg ;
 	i2c.regs->cr_reg = 0x001 ;
 }
 #else
@@ -1118,6 +1122,8 @@ static int __init i2c_adap_wmt_init(void)
 	int varlen = 80;
 	/*since i2c4 is share pin, it turn on while uboot parameter define i2c4 mode*/
 	int i2c_turn_on = 0;
+	unsigned int pllb_freq = 0;
+	unsigned int tr_val = 0;
 
 #ifdef CONFIG_I2C_SLAVE_WMT
 #ifdef USE_UBOOT_PARA
@@ -1193,9 +1199,13 @@ static int __init i2c_adap_wmt_init(void)
 		/* hardware initial*/
 		/**/
 		auto_pll_divisor(DEV_I2C4, CLK_ENABLE, 0, 0);
-		auto_pll_divisor(DEV_I2C4, SET_DIV, 2, 20);/*20M Hz*/
+		pllb_freq = auto_pll_divisor(DEV_I2C4, SET_DIV, 2, 20);/*20M Hz*/
 		i2c_gpio_init();
-
+		printk("pllb_freq = %d\n", pllb_freq);
+		if ((pllb_freq%(1000*2*100)) != 0)
+			tr_val = pllb_freq/(1000*2*100) + 1;
+		else
+			tr_val = pllb_freq/(1000*2*100);
 		i2c.regs->cr_reg  = 0 ;
 		i2c.regs->div_reg = APB_96M_I2C_DIV ;
 		i2c.regs->isr_reg = I2C_ISR_ALL_WRITE_CLEAR ;   /* 0x0007*/
@@ -1206,9 +1216,11 @@ static int __init i2c_adap_wmt_init(void)
 		i2c.regs->isr_reg = I2C_ISR_ALL_WRITE_CLEAR ; /* 0x0007*/
 
 		if (i2c.i2c_mode == I2C_STANDARD_MODE)
-			i2c.regs->tr_reg = I2C_TR_STD_VALUE ;   /* 0x8064*/
-		else if (i2c.i2c_mode == I2C_FAST_MODE)
-			i2c.regs->tr_reg = I2C_TR_FAST_VALUE ; /* 0x8019*/
+			i2c.regs->tr_reg = 0xff00|tr_val;
+		else if (i2c.i2c_mode == I2C_FAST_MODE) {
+			tr_val /= 4;
+			i2c.regs->tr_reg = 0xff00|tr_val ;
+		}
 	}
 
 

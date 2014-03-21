@@ -47,6 +47,7 @@ WonderMedia Technologies, Inc.
 #include "mmc_atsmb.h"
 //#include <mach/multicard.h>
 #include <mach/irqs.h>
+#include <linux/regulator/consumer.h>
 
 #define mprintk  
 
@@ -55,6 +56,13 @@ WonderMedia Technologies, Inc.
 	printk("%s: %s: " fmt, mmc_hostname(host->mmc), __func__ , args)
 #endif
 #define ATSMB_TIMEOUT_TIME (HZ*2)
+
+
+static	struct delayed_work	mmc_work;
+
+static int g_atsmb_regulator;
+static struct regulator *atsmb_regulator;
+
 
 //add by jay,for modules support
 static u64 wmt_sdmmc_dma_mask = 0xffffffffUL;
@@ -346,9 +354,12 @@ void atsmb_dump_reg(void) {}
 
 unsigned int fmax0 = 515633;
 unsigned int MMC0_DRIVER_VERSION;
-int SD0_function = 0; /*0: normal SD/MMC card reader , 1: internal SDIO wifi*/ 
-int SDXC0_function;
-
+int SD0_function = 0; /*0: normal SD/MMC card reader , 1: internal SDIO wifi*/
+int SDXC0_function; 
+static int SD0_detect_pol = 0;
+static int SD0_detect_pulldown = 0;
+static int SD0_speed = 0;
+	
 int SCC_ID(void){
 	unsigned short val;
     
@@ -718,11 +729,13 @@ atsmb_request_end(struct atsmb_host *host, struct mmc_request *mrq)
 	 * Need to drop the host lock here; mmc_request_done may call
 	 * back into the driver...
 	 */
-	spin_unlock(&host->lock);
+	//kevin delete spin lock
+	//spin_unlock(&host->lock);
 	/*DBG("100");*/
 	mmc_request_done(host->mmc, mrq);
 	/*DBG("101\n");*/
-	spin_lock(&host->lock);
+    //kevin delete spin lock
+	//spin_lock(&host->lock);
 	DBG("[%s] e\n",__func__);
 }
 
@@ -1272,7 +1285,11 @@ static int atsmb_get_slot_status(struct mmc_host *mmc)
 //	spin_unlock_irqrestore(&host->lock, flags); // Vincent Li mark out for CONFIG_PREEMPT_RT
 	/* after WM3400 A1 ATSMB_CARD_IN_SLOT_GPI = 1 means not in slot*/
 	if (MMC0_DRIVER_VERSION >= MMC_DRV_3426_A0) {
-		ret = ((status_0 & ATSMB_CARD_NOT_IN_SLOT_GPI) ? 0 : 1);
+		if(SD0_detect_pol) 
+			ret = ((status_0 & ATSMB_CARD_NOT_IN_SLOT_GPI) ? 1 : 0);
+		else
+			ret = ((status_0 & ATSMB_CARD_NOT_IN_SLOT_GPI) ? 0 : 1);
+			
 		DBG("[%s] e1\n",__func__);
 		return ret;
 	} else {
@@ -1791,88 +1808,174 @@ static int atsmb_set_clock(struct mmc_host *mmc, unsigned int clock)
 
 	if (*ATSMB0_EXT_BUS_MODE & BIT4) /*Enable DDR50*/
 		clock_multiplier = 2;
-	
-	if (clock == mmc->f_min) {
-		DBG("[%s]ATSMB Host 390KHz\n", __func__);  
-		if ((*ATSMB0_CTL2 & BIT3) == 0) {
-			DBG("[%s] 1.8V clock = %u\n",__func__,clock);
-			DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
-		}
- 		return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 1, 390);
-	} else if (clock >= 208000000) {
-		DBG("[%s]ATSMB Host 208MHz\n", __func__);
-		if ((*ATSMB0_CTL2 & BIT3) == 0) {
-			DBG("[%s] 1.8V clock = %u\n",__func__,clock);
-			
-			/*Set DPCTL 010 DNCTL 001*/
-			SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
-			SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
 
-			
-			DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
-			DBG("[%s] *DPCTL = 0x%x DPCTL = 0x%x\n", 
-				__func__, SD0_DPCTL_4BYTE_ADDR, SD0_DPCTL_4BYTE_VAL);
-			DBG("[%s] *DNCTL = 0x%x DNCTL = 0x%x\n", 
-				__func__, SD0_DNCTL_4BYTE_ADDR, SD0_DNCTL_4BYTE_VAL);
+	if(SD0_speed){
+		if (clock == mmc->f_min) {
+			DBG("[%s]ATSMB Host 390KHz\n", __func__);  
+			if ((*ATSMB0_CTL2 & BIT3) == 0) {
+				DBG("[%s] 1.8V clock = %u\n",__func__,clock);
+				DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
+			}
+	 		return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 1, 390);
 		}
-		return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 2, 80);	
-	} else if (clock >= 100000000) {
-		DBG("[%s]ATSMB Host 100MHz\n", __func__);
-		if ((*ATSMB0_CTL2 & BIT3) == 0) {
-			DBG("[%s] 1.8V clock = %u\n",__func__,clock);
+		else if (clock >= 208000000) {
+			DBG("[%s]ATSMB Host 208MHz\n", __func__);
+			if ((*ATSMB0_CTL2 & BIT3) == 0) {
+				DBG("[%s] 1.8V clock = %u\n",__func__,clock);
+				
+				/*Set DPCTL 010 DNCTL 001*/
+				SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
+				SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
 
-			/*Set DPCTL 010 DNCTL 001*/
-			SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
-			SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
-			
-			DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
-		}
-		return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 2, 80);
-	} else if (clock >= 50000000) {
-		DBG("[%s]ATSMB Host 50MHz\n", __func__);
-		if ((*ATSMB0_CTL2 & BIT3) == 0) {
-			DBG("[%s] 1.8V clock = %u\n",__func__,clock);
+				
+				DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
+				DBG("[%s] *DPCTL = 0x%x DPCTL = 0x%x\n", 
+					__func__, SD0_DPCTL_4BYTE_ADDR, SD0_DPCTL_4BYTE_VAL);
+				DBG("[%s] *DNCTL = 0x%x DNCTL = 0x%x\n", 
+					__func__, SD0_DNCTL_4BYTE_ADDR, SD0_DNCTL_4BYTE_VAL);
+			}
+			return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 2, 80);	
+		} else if (clock >= 100000000) {
+			DBG("[%s]ATSMB Host 100MHz\n", __func__);
+			if ((*ATSMB0_CTL2 & BIT3) == 0) {
+				DBG("[%s] 1.8V clock = %u\n",__func__,clock);
 
-			/*Set DPCTL 010 DNCTL 001*/
-			SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
-			SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
-			DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
+				/*Set DPCTL 010 DNCTL 001*/
+				SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
+				SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
+				
+				DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
+			}
+			return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 2, 80);
+		} else if (clock >= 50000000) {
+			DBG("[%s]ATSMB Host 50MHz\n", __func__);
+			if ((*ATSMB0_CTL2 & BIT3) == 0) {
+				DBG("[%s] 1.8V clock = %u\n",__func__,clock);
+
+				/*Set DPCTL 010 DNCTL 001*/
+				SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
+				SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
+				DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
+			}
+			return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 2, 45 * clock_multiplier);
+		} else if ((clock >= 25000000) && (clock < 50000000)) {
+			if ((*ATSMB0_CTL2 & BIT3) == 0) {
+				DBG("[%s] 1.8V clock = %u\n",__func__,clock);
+				
+				/*Set DPCTL 010 DNCTL 001*/
+				SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
+				SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
+				DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
+			}
+			DBG("[%s]ATSMB Host 25MHz\n", __func__);
+			return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 2, 24 * clock_multiplier);
+		} else if ((clock >= 20000000) && (clock < 25000000)) {
+			DBG("[%s]ATSMB Host 20MHz\n", __func__);
+			if ((*ATSMB0_CTL2 & BIT3) == 0) {
+				DBG("[%s] 1.8V clock = %u\n",__func__,clock);
+				
+				/*Set DPCTL 010 DNCTL 001*/
+				SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
+				SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
+				DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
+			}
+			return  auto_pll_divisor(DEV_SDMMC0, SET_DIV, 2, 20 * clock_multiplier);
+		} else {
+			DBG("[%s]ATSMB Host 390KHz\n", __func__);
+			if ((*ATSMB0_CTL2 & BIT3) == 0) {
+				DBG("[%s] 1.8V clock = %u\n",__func__,clock);
+				
+				/*Set DPCTL 010 DNCTL 001*/
+				SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
+				SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
+				DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
+			}
+			return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 1, 390 * clock_multiplier);
 		}
-		return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 2, 45 * clock_multiplier);
-	} else if ((clock >= 25000000) && (clock < 50000000)) {
-		if ((*ATSMB0_CTL2 & BIT3) == 0) {
-			DBG("[%s] 1.8V clock = %u\n",__func__,clock);
-			
-			/*Set DPCTL 010 DNCTL 001*/
-			SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
-			SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
-			DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
-		}
-		DBG("[%s]ATSMB Host 25MHz\n", __func__);
-		return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 2, 24 * clock_multiplier);
-	} else if ((clock >= 20000000) && (clock < 25000000)) {
-		DBG("[%s]ATSMB Host 20MHz\n", __func__);
-		if ((*ATSMB0_CTL2 & BIT3) == 0) {
-			DBG("[%s] 1.8V clock = %u\n",__func__,clock);
-			
-			/*Set DPCTL 010 DNCTL 001*/
-			SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
-			SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
-			DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
-		}
-		return  auto_pll_divisor(DEV_SDMMC0, SET_DIV, 2, 20 * clock_multiplier);
-	} else {
-		DBG("[%s]ATSMB Host 390KHz\n", __func__);
-		if ((*ATSMB0_CTL2 & BIT3) == 0) {
-			DBG("[%s] 1.8V clock = %u\n",__func__,clock);
-			
-			/*Set DPCTL 010 DNCTL 001*/
-			SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
-			SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
-			DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
-		}
-		return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 1, 390 * clock_multiplier);
+	}else{
+		if (clock == mmc->f_min) {
+			DBG("[%s]ATSMB Host 390KHz\n", __func__);  
+			if ((*ATSMB0_CTL2 & BIT3) == 0) {
+				DBG("[%s] 1.8V clock = %u\n",__func__,clock);
+				DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
+			}
+	 		return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 1, 390);
+		}else if (clock >= 25000000) {
+			if ((*ATSMB0_CTL2 & BIT3) == 0) {
+				DBG("[%s] 1.8V clock = %u\n",__func__,clock);
+				
+				/*Set DPCTL 010 DNCTL 001*/
+				SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
+				SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
+				DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
+			}
+			DBG("[%s]ATSMB Host 25MHz\n", __func__);
+			return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 2, 24 * clock_multiplier);
+		} else if ((clock >= 20000000) && (clock < 25000000)) {
+			DBG("[%s]ATSMB Host 20MHz\n", __func__);
+			if ((*ATSMB0_CTL2 & BIT3) == 0) {
+				DBG("[%s] 1.8V clock = %u\n",__func__,clock);
+				
+				/*Set DPCTL 010 DNCTL 001*/
+				SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
+				SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
+				DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
+			}
+			return  auto_pll_divisor(DEV_SDMMC0, SET_DIV, 2, 20 * clock_multiplier);
+		} else {
+			DBG("[%s]ATSMB Host 390KHz\n", __func__);
+			if ((*ATSMB0_CTL2 & BIT3) == 0) {
+				DBG("[%s] 1.8V clock = %u\n",__func__,clock);
+				
+				/*Set DPCTL 010 DNCTL 001*/
+				SD0_DPCTL_4BYTE_VAL = (BIT1 | BIT4 | BIT7 | BIT10 | BIT13 | BIT16 | BIT19);
+				SD0_DNCTL_4BYTE_VAL = (BIT0 | BIT3 | BIT6 | BIT9 | BIT12 | BIT15 | BIT18);
+				DBG("[%s] *ATSMB0_CTL2 = 0x%x \n", __func__, *ATSMB0_CTL2);
+			}
+			return auto_pll_divisor(DEV_SDMMC0, SET_DIV, 1, 390 * clock_multiplier);
+		}	
 	}
+}
+
+static void atsmb_enable_power(struct atsmb_host *host, unsigned long flags)
+{
+	int result;
+	spin_unlock_irqrestore(&host->lock, flags);
+	if (g_atsmb_regulator) {
+		if (regulator_is_enabled(atsmb_regulator) == 0) {
+			DBG("[%s] Turn on power\n", __FUNCTION__);
+			result = regulator_enable(atsmb_regulator);
+			if (result != 0)
+				printk(KERN_ALERT "[%s] regulator_enable FAIL\n", __FUNCTION__);
+		}
+	} else {
+		GPIO_OD_GP13_SD0_BYTE_VAL &= ~GPIO_SD0_POWER; 
+	}
+	spin_lock_irqsave(&host->lock, flags);
+}
+
+static void atsmb_disable_power(struct atsmb_host *host, unsigned long flags)
+{
+	int result;
+	spin_unlock_irqrestore(&host->lock, flags);
+	if (g_atsmb_regulator) {
+		if (regulator_is_enabled(atsmb_regulator) == 1) {
+			DBG("[%s] Turn off power\n", __FUNCTION__);
+			result = regulator_disable(atsmb_regulator);
+			if (result != 0)
+				printk(KERN_ALERT "[%s] regulator_disable FAIL\n", __FUNCTION__);
+		}
+	} else {
+		GPIO_CTRL_GP13_SD0_BYTE_VAL |= GPIO_SD0_POWER;
+		GPIO_OC_GP13_SD0_BYTE_VAL |= GPIO_SD0_POWER;
+		/*set internal pull up*/
+		PULL_CTRL_GP13_SD0_BYTE_VAL |= GPIO_SD0_POWER;
+		/*set internal pull enable*/
+		PULL_EN_GP13_SD0_BYTE_VAL |= GPIO_SD0_POWER;
+		/*disable SD0 power*/
+		GPIO_OD_GP13_SD0_BYTE_VAL |= GPIO_SD0_POWER;
+	}
+	spin_lock_irqsave(&host->lock, flags);
 }
 
 /**********************************************************************
@@ -1904,15 +2007,7 @@ static void atsmb_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 
 			/*  disable SD Card power  */			
 			/*set SD0 power pin as GPO pin*/
-			GPIO_CTRL_GP13_SD0_BYTE_VAL |= GPIO_SD0_POWER;
-            GPIO_OC_GP13_SD0_BYTE_VAL |= GPIO_SD0_POWER;
-
-			/*set internal pull up*/
-            PULL_CTRL_GP13_SD0_BYTE_VAL |= GPIO_SD0_POWER;
-			/*set internal pull enable*/
-            PULL_EN_GP13_SD0_BYTE_VAL |= GPIO_SD0_POWER;
-			/*disable SD0 power*/
-			GPIO_OD_GP13_SD0_BYTE_VAL |= GPIO_SD0_POWER;
+			atsmb_disable_power(host, flags);
                     
 			/* Disable Pull up/down resister of SD Bus */
 			/*GPIO_PULL_CTRL_GP13_XDIO_BYTE_VAL &=  ~SD0_PIN; marked by eason 2012/3/29*/ 
@@ -1976,7 +2071,10 @@ static void atsmb_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 			PULL_EN_GP13_SD0_BYTE_VAL &= ~(GPIO_SD0_Clock | GPIO_SD0_Command);
 
 			/*Set CD ,WP ,DATA pin pull up*/
-            PULL_CTRL_GP63_SD02_BYTE_VAL |= GPIO_SD0_CD;
+			if (SD0_detect_pulldown)
+				PULL_CTRL_GP63_SD02_BYTE_VAL &= ~GPIO_SD0_CD;
+			else
+				PULL_CTRL_GP63_SD02_BYTE_VAL |= GPIO_SD0_CD;
 			PULL_CTRL_GP13_SD0_BYTE_VAL |= (GPIO_SD0_Data | GPIO_SD0_WriteProtect);
 
 			/*Enable CD ,WP ,DATA  internal pull*/
@@ -1992,9 +2090,9 @@ static void atsmb_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 			spin_lock_irqsave(&host->lock, flags);
 
 			/*  enable SD Card Power  */
-			GPIO_OD_GP13_SD0_BYTE_VAL &= ~GPIO_SD0_POWER; 
+			atsmb_enable_power(host, flags);
 
-            /* enable SD output clock */
+			/* enable SD output clock */
 			*ATSMB0_BUS_MODE |= ATSMB_CST;
 
 			spin_unlock_irqrestore(&host->lock, flags);
@@ -2181,7 +2279,10 @@ static int __init atsmb_probe(struct platform_device *pdev)
     
     if (MMC0_DRIVER_VERSION == MMC_DRV_3498) {
 		/* Pull up/down resister of SD CD */
-		PULL_CTRL_GP63_SD02_BYTE_VAL |= GPIO_SD0_CD; /*pull up CD*/
+		if(SD0_detect_pulldown)
+			PULL_CTRL_GP63_SD02_BYTE_VAL &= ~GPIO_SD0_CD; /*pull down CD*/
+		else
+			PULL_CTRL_GP63_SD02_BYTE_VAL |= GPIO_SD0_CD; /*pull up CD*/
 		PULL_EN_GP63_SD02_BYTE_VAL |= GPIO_SD0_CD;
 
 		/* config CardDetect pin to SD function */
@@ -2578,7 +2679,38 @@ static struct attribute * g[] = {
 static struct attribute_group attr_group = {
 	.attrs = g,
 };
+    //kevin add to check tf card stats every 1 sec
 
+static void wmt_mmc_work(struct work_struct *work)
+{
+    
+    static int card_state_save = -1;
+	if(mmc_host_attr!=NULL){
+		struct atsmb_host *host = mmc_priv(mmc_host_attr);
+        int card_state;
+        if (mmc_host_attr->card != NULL)
+            card_state = 1;
+        else
+            card_state = 0;
+
+       
+        //printk("check %d %d\n",atsmb_get_slot_status(host->mmc),card_state);
+        if(atsmb_get_slot_status(host->mmc)!=card_state){
+            //the second time error,goto detect or remove card
+            if(card_state_save == card_state){
+
+                //printk("xxxxxxxxxxxxxxxxxxxxxxxxcatch error  %dxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",card_state);
+                mmc_detect_change(mmc_host_attr, 0);
+
+            }
+            //mark status error
+            card_state_save =card_state;
+        }else
+            card_state_save = -1;
+		
+	}
+	schedule_delayed_work(&mmc_work, 1*HZ);
+}
 static int __init atsmb_init(void)
 {
 	int ret;
@@ -2595,8 +2727,8 @@ static int __init atsmb_init(void)
 	/*Read system param to identify host function 0: SD/MMC 1:SDIO wifi*/
 	retval = wmt_getsyspara(varname, buf, &varlen);
 	if (retval == 0) {
-		sscanf(buf,"%x%c%d", &temp, &colon, &SD0_function);
-		printk(KERN_ALERT "wmt.sd0.param = %x%c%d\n", temp, colon, SD0_function);
+		sscanf(buf,"%x%c%d%c%d%c%d%c%d", &temp, &colon, &SD0_function,&colon,&SD0_detect_pol,&colon,&SD0_detect_pulldown,&colon,&SD0_speed);
+		printk(KERN_ALERT "wmt.sd0.param = %x%c%d%c%d%c%d%c%d\n", temp, colon, SD0_function,colon,SD0_detect_pol,colon,SD0_detect_pulldown,colon,SD0_speed);
 		sd_enable = temp & 0xf;
 		SDXC0_function = (temp >> 4) & 0xf;
 		printk(KERN_ALERT "SD0 ebable = %x, SDXC = %x, function = %x\n",
@@ -2627,11 +2759,32 @@ static int __init atsmb_init(void)
 	if (platform_device_register(&wmt_sdmmc_device))//add by jay,for modules support
 		return -1;
 	//ret = platform_driver_register(&atsmb_driver);
+
+	/* Register regulator for SD host power switch */
+	atsmb_regulator = regulator_get(NULL, "ldo4");
+	if (IS_ERR(atsmb_regulator))
+		g_atsmb_regulator = 0;
+	else
+		g_atsmb_regulator = 1;
+	printk("[SD/MMC]use_regulator = %d\n", g_atsmb_regulator);
+
+	/* Force to disable ldo4 regulator, because Power switch is turned on, default */
+	if (g_atsmb_regulator) {
+		ret = regulator_force_disable(atsmb_regulator);
+		if (ret != 0)
+			printk(KERN_ALERT "[%s] get regulator Fail, ret = %d\n", __FUNCTION__, ret);
+	}
+
 	ret = platform_driver_probe(&atsmb_driver, atsmb_probe);
 
     atsmb_kobj = kobject_create_and_add("mmc0", NULL);
 	if (!atsmb_kobj)
 		return -ENOMEM;
+
+    //kevin add to check tf card stats every 1 sec
+	INIT_DELAYED_WORK(&mmc_work, wmt_mmc_work);
+    schedule_delayed_work(&mmc_work, 1*HZ);
+
 	return sysfs_create_group(atsmb_kobj, &attr_group);
     
 	DBG("[%s] e\n",__func__);

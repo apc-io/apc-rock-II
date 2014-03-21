@@ -3,8 +3,7 @@
  *
  *  Copyright 2008 Pierre Ossman
  *
- * Based on code by Siano Mobile Silicon, Inc.,
- * Copyright (C) 2006-2008, Uri Shkolnik
+ * Copyright (C) 2006-2011, Siano Mobile Silicon (Doron Cohen)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -39,16 +38,16 @@
 #include <linux/mmc/card.h>
 #include <linux/mmc/sdio_func.h>
 #include <linux/mmc/sdio_ids.h>
-#include <linux/module.h>
 
 #include "smscoreapi.h"
 #include "sms-cards.h"
 
 /* Registers */
-
+extern bool int_maskflag;
 #define SMSSDIO_DATA		0x00
 #define SMSSDIO_INT		0x04
 #define SMSSDIO_BLOCK_SIZE	128
+#define SMSSDIO_CCCR		6
 
 static const struct sdio_device_id smssdio_ids[] __devinitconst = {
 	{SDIO_DEVICE(SDIO_VENDOR_ID_SIANO, SDIO_DEVICE_ID_SIANO_STELLAR),
@@ -61,6 +60,24 @@ static const struct sdio_device_id smssdio_ids[] __devinitconst = {
 	 .driver_data = SMS1XXX_BOARD_SIANO_VEGA},
 	{SDIO_DEVICE(SDIO_VENDOR_ID_SIANO, SDIO_DEVICE_ID_SIANO_VENICE),
 	 .driver_data = SMS1XXX_BOARD_SIANO_VEGA},
+	{SDIO_DEVICE(SDIO_VENDOR_ID_SIANO, 0x302),
+	 .driver_data = SMS1XXX_BOARD_SIANO_MING},
+	{SDIO_DEVICE(SDIO_VENDOR_ID_SIANO, 0x320),
+	 .driver_data = SMS1XXX_BOARD_SIANO_QING},
+	{SDIO_DEVICE(SDIO_VENDOR_ID_SIANO, 0x400),
+	 .driver_data = SMS1XXX_BOARD_SIANO_MING},
+	{SDIO_DEVICE(SDIO_VENDOR_ID_SIANO, 0x500),
+	 .driver_data = SMS1XXX_BOARD_SIANO_PELE},
+	{SDIO_DEVICE(SDIO_VENDOR_ID_SIANO, 0x510),
+	 .driver_data = SMS1XXX_BOARD_SIANO_ZICO},
+	{SDIO_DEVICE(SDIO_VENDOR_ID_SIANO, 0x600),
+	 .driver_data = SMS1XXX_BOARD_SIANO_RIO},
+	{SDIO_DEVICE(SDIO_VENDOR_ID_SIANO, 0x610),
+	 .driver_data = SMS1XXX_BOARD_SIANO_SANTOS},
+    {SDIO_DEVICE(SDIO_VENDOR_ID_SIANO, 0x700),
+	 .driver_data = SMS1XXX_BOARD_SIANO_DENVER_2160},
+	{SDIO_DEVICE(SDIO_VENDOR_ID_SIANO, 0x800),
+	 .driver_data = SMS1XXX_BOARD_SIANO_DENVER_1530},
 	{ /* end: all zeroes */ },
 };
 
@@ -68,11 +85,16 @@ MODULE_DEVICE_TABLE(sdio, smssdio_ids);
 
 struct smssdio_device {
 	struct sdio_func *func;
-
-	struct smscore_device_t *coredev;
+	struct work_struct work_thread;
+	void *coredev;
 
 	struct smscore_buffer_t *split_cb;
 };
+
+static u32 sdio_use_workthread;
+
+module_param(sdio_use_workthread, int, S_IRUGO);
+MODULE_PARM_DESC(sdio_use_workthread, "Use workthread for sdio interupt handling. Required for specific host drivers (defaule 0)");
 
 /*******************************************************************/
 /* Siano core callbacks                                            */
@@ -82,8 +104,19 @@ static int smssdio_sendrequest(void *context, void *buffer, size_t size)
 {
 	int ret = 0;
 	struct smssdio_device *smsdev;
+	void* auxbuf = NULL;
 
 	smsdev = context;
+	
+	if (size & 3)
+	{
+		/* Make sure size is aligned to 32 bits, round up if required*/			
+		auxbuf = kmalloc((size + 3) & 0xfffffffc, GFP_KERNEL);
+		memcpy (auxbuf, buffer, size);
+		buffer = auxbuf;
+		size = (size + 3) & 0xfffffffc;
+	}
+
 
 	sdio_claim_host(smsdev->func);
 
@@ -103,6 +136,8 @@ static int smssdio_sendrequest(void *context, void *buffer, size_t size)
 	}
 
 out:
+	if (auxbuf)
+		kfree(auxbuf);
 	sdio_release_host(smsdev->func);
 
 	return ret;
@@ -112,31 +147,57 @@ out:
 /* SDIO callbacks                                                  */
 /*******************************************************************/
 
-static void smssdio_interrupt(struct sdio_func *func)
+static void smssdio_work_thread(struct work_struct *arg)
 {
 	int ret, isr;
 
-	struct smssdio_device *smsdev;
-	struct smscore_buffer_t *cb;
-	struct SmsMsgHdr_ST *hdr;
-	size_t size;
 
-	smsdev = sdio_get_drvdata(func);
+        struct smscore_buffer_t *cb;
+	struct SmsMsgHdr_S *hdr;
+	size_t size;
+        struct smssdio_device *smsdev = container_of(arg, struct smssdio_device, work_thread);
+	 struct sdio_func *sdfunc = smsdev->func;
 
 	/*
 	 * The interrupt register has no defined meaning. It is just
 	 * a way of turning of the level triggered interrupt.
 	 */
-	isr = sdio_readb(func, SMSSDIO_INT, &ret);
+	sdio_claim_host(smsdev->func);
+
+	isr = sdio_readb(smsdev->func, SMSSDIO_INT, &ret);
 	if (ret) {
-		sms_err("Unable to read interrupt register!\n");
-		return;
+		sms_err("Got error reading interrupt status=%d, isr=%d\n", ret, isr);
+		isr = sdio_readb(smsdev->func, SMSSDIO_INT, &ret);
+		if (ret)
+		{
+			sms_err("Second read also failed, try to recover\n");
+			sdio_release_host(smsdev->func);
+			sdfunc = kmemdup(smsdev->func, sizeof(struct sdio_func), GFP_KERNEL);
+			if (!sdfunc)
+			{
+				sms_err("Out of memory!!!");
+				return;
+			}
+	  	        sdfunc->num = 0;
+			sdio_claim_host(sdfunc);
+			sdio_writeb(sdfunc, 2,  SMSSDIO_CCCR, &ret);
+			sms_err("Read ISR status (write returned) %d\n", ret);
+			isr = sdio_readb(smsdev->func, SMSSDIO_INT, &ret);
+			sms_err("Read returned ret=%d, isr=%d\n", ret, isr);
+			sdio_writeb(sdfunc, 0,  SMSSDIO_CCCR, &ret);
+	        	sdio_release_host(sdfunc);
+	        	kfree(sdfunc);
+			sms_err("Recovered, but this transaction is lost.");
+			return;
+		}
+		sms_err("Second read succeed status=%d, isr=%d (continue)\n", ret, isr);
 	}
 
 	if (smsdev->split_cb == NULL) {
 		cb = smscore_getbuffer(smsdev->coredev);
 		if (!cb) {
 			sms_err("Unable to allocate data buffer!\n");
+			sdio_release_host(smsdev->func);
 			return;
 		}
 
@@ -145,14 +206,15 @@ static void smssdio_interrupt(struct sdio_func *func)
 					 SMSSDIO_DATA,
 					 SMSSDIO_BLOCK_SIZE);
 		if (ret) {
-			sms_err("Error %d reading initial block!\n", ret);
-			return;
+			sms_warn("Error %d reading initial block, "
+				"continue with sequence.\n", ret);
+
 		}
 
 		hdr = cb->p;
-
 		if (hdr->msgFlags & MSG_HDR_FLAG_SPLIT_MSG) {
 			smsdev->split_cb = cb;
+			sdio_release_host(smsdev->func);
 			return;
 		}
 
@@ -164,11 +226,10 @@ static void smssdio_interrupt(struct sdio_func *func)
 		cb = smsdev->split_cb;
 		hdr = cb->p;
 
-		size = hdr->msgLength - sizeof(struct SmsMsgHdr_ST);
+		size = hdr->msgLength - sizeof(struct SmsMsgHdr_S);
 
 		smsdev->split_cb = NULL;
 	}
-
 	if (size) {
 		void *buffer;
 
@@ -187,6 +248,7 @@ static void smssdio_interrupt(struct sdio_func *func)
 		if (ret && ret != -EINVAL) {
 			smscore_putbuffer(smsdev->coredev, cb);
 			sms_err("Error %d reading data from card!\n", ret);
+			sdio_release_host(smsdev->func);
 			return;
 		}
 
@@ -206,6 +268,7 @@ static void smssdio_interrupt(struct sdio_func *func)
 					smscore_putbuffer(smsdev->coredev, cb);
 					sms_err("Error %d reading "
 						"data from card!\n", ret);
+					sdio_release_host(smsdev->func);
 					return;
 				}
 
@@ -218,10 +281,25 @@ static void smssdio_interrupt(struct sdio_func *func)
 		}
 	}
 
+	sdio_release_host(smsdev->func);
 	cb->size = hdr->msgLength;
 	cb->offset = 0;
-
 	smscore_onresponse(smsdev->coredev, cb);
+}
+
+
+static void smssdio_interrupt(struct sdio_func *func)
+{
+	struct smssdio_device *smsdev = sdio_get_drvdata(func);
+	if(int_maskflag==false)
+		{
+		printk("int mask wt=%d\n",sdio_use_workthread);
+		return;
+		}
+	if (sdio_use_workthread == 0) /*When not required - handle everything from interrupt content*/
+		smssdio_work_thread(&smsdev->work_thread);
+	else
+		schedule_work(&smsdev->work_thread);
 }
 
 static int __devinit smssdio_probe(struct sdio_func *func,
@@ -234,12 +312,12 @@ static int __devinit smssdio_probe(struct sdio_func *func,
 	struct smsdevice_params_t params;
 
 	board_id = id->driver_data;
-
 	smsdev = kzalloc(sizeof(struct smssdio_device), GFP_KERNEL);
 	if (!smsdev)
 		return -ENOMEM;
 
 	smsdev->func = func;
+        INIT_WORK(&smsdev->work_thread, smssdio_work_thread);
 
 	memset(&params, 0, sizeof(struct smsdevice_params_t));
 
@@ -254,6 +332,7 @@ static int __devinit smssdio_probe(struct sdio_func *func,
 	params.sendrequest_handler = smssdio_sendrequest;
 
 	params.device_type = sms_get_board(board_id)->type;
+	params.require_node_buffer = 1;
 
 	if (params.device_type != SMS_STELLAR)
 		params.flags |= SMS_DEVICE_FAMILY2;
@@ -314,14 +393,13 @@ static void smssdio_remove(struct sdio_func *func)
 	struct smssdio_device *smsdev;
 
 	smsdev = sdio_get_drvdata(func);
+	sdio_claim_host(func);
 
-	/* FIXME: racy! */
 	if (smsdev->split_cb)
 		smscore_putbuffer(smsdev->coredev, smsdev->split_cb);
 
 	smscore_unregister_device(smsdev->coredev);
 
-	sdio_claim_host(func);
 	sdio_release_irq(func);
 	sdio_disable_func(func);
 	sdio_release_host(func);
@@ -340,26 +418,19 @@ static struct sdio_driver smssdio_driver = {
 /* Module functions                                                */
 /*******************************************************************/
 
-static int __init smssdio_module_init(void)
+int smssdio_register(void)
 {
 	int ret = 0;
 
-	printk(KERN_INFO "smssdio: Siano SMS1xxx SDIO driver\n");
-	printk(KERN_INFO "smssdio: Copyright Pierre Ossman\n");
 
 	ret = sdio_register_driver(&smssdio_driver);
 
 	return ret;
 }
 
-static void __exit smssdio_module_exit(void)
+void smssdio_unregister(void)
 {
 	sdio_unregister_driver(&smssdio_driver);
 }
 
-module_init(smssdio_module_init);
-module_exit(smssdio_module_exit);
 
-MODULE_DESCRIPTION("Siano SMS1xxx SDIO driver");
-MODULE_AUTHOR("Pierre Ossman");
-MODULE_LICENSE("GPL");

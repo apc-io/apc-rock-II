@@ -36,6 +36,9 @@
 #include <linux/mount.h>
 #include <linux/math64.h>
 #include <linux/writeback.h>
+#include <linux/reboot.h>
+#include <linux/syscalls.h>
+#include "../../drivers/mtd/ubi/ubi.h"
 #include "ubifs.h"
 
 /*
@@ -48,10 +51,67 @@
 struct kmem_cache *ubifs_inode_slab;
 
 /* UBIFS TNC shrinker description */
+
+static void kill_ubifs_super(struct super_block *s);
+
+
 static struct shrinker ubifs_shrinker_info = {
 	.shrink = ubifs_shrinker,
 	.seeks = DEFAULT_SEEKS,
 };
+
+
+
+static int ubifs_reboot (struct notifier_block *nb, unsigned long code, void *_cmd)
+{
+	struct ubifs_info *c;
+	struct ubi_device *ubi;
+	int  i = 0, err = 0;
+	c = container_of(nb, struct ubifs_info, reboot_notifier);
+	ubi = c->ubi->vol->ubi;
+	mutex_lock(&c->umount_mutex);
+
+	if (c->bgt) {
+                kthread_stop(c->bgt);
+                c->bgt = NULL;
+        }
+
+	/* Synchronize write-buffers */
+	for (i = 0; i < c->jhead_cnt; i++)
+		ubifs_wbuf_sync(&c->jheads[i].wbuf);
+
+	c->mst_node->flags &= ~cpu_to_le32(UBIFS_MST_DIRTY);
+	c->mst_node->flags |= cpu_to_le32(UBIFS_MST_NO_ORPHS);
+	c->mst_node->gc_lnum = cpu_to_le32(c->gc_lnum);
+	err = ubifs_write_master(c);
+	//err = ubifs_run_commit(c);
+
+	for (i = 0; i < c->jhead_cnt; i++)
+	/* Make sure write-buffer timers are canceled */
+	hrtimer_cancel(&c->jheads[i].wbuf.timer);
+	ubi_update_volume(c->ubi);
+	if (ubi->bgt_thread) {
+		kthread_stop(ubi->bgt_thread);
+		ubi->bgt_thread = NULL;
+	}
+	if (err)
+		ubifs_ro_mode(c, err);
+	ubi->ro_mode = 1;
+	vfree(c->orph_buf);
+	c->orph_buf = NULL;
+	kfree(c->write_reserve_buf);
+	c->write_reserve_buf = NULL;
+	vfree(c->ileb_buf);
+	c->ileb_buf = NULL;
+	ubifs_lpt_free(c, 1);
+	c->vfs_sb->s_flags |= MS_RDONLY;
+	c->ro_mount = 1;
+	err = dbg_check_space_info(c);
+	if (err)
+		ubifs_ro_mode(c, err);
+	mutex_unlock(&c->umount_mutex);
+	return NOTIFY_DONE;
+}
 
 /**
  * validate_inode - validate inode.
@@ -1542,7 +1602,7 @@ static void ubifs_umount(struct ubifs_info *c)
 {
 	dbg_gen("un-mounting UBI device %d, volume %d", c->vi.ubi_num,
 		c->vi.vol_id);
-
+	unregister_reboot_notifier(&c->reboot_notifier);
 	dbg_debugfs_exit_fs(c);
 	spin_lock(&ubifs_infos_lock);
 	list_del(&c->infos_list);
@@ -1824,7 +1884,7 @@ static void ubifs_put_super(struct super_block *sb)
 		 * not write the master node.
 		 */
 		if (!c->ro_error) {
-			int err;
+			int err = 0;
 
 			/* Synchronize write-buffers */
 			for (i = 0; i < c->jhead_cnt; i++)
@@ -2177,7 +2237,8 @@ static struct dentry *ubifs_mount(struct file_system_type *fs_type, int flags,
 
 	/* 'fill_super()' opens ubi again so we must close it here */
 	ubi_close_volume(ubi);
-
+	c->reboot_notifier.notifier_call = ubifs_reboot;
+	register_reboot_notifier(&c->reboot_notifier);//Johnny Liu
 	return dget(sb->s_root);
 
 out_deact:
@@ -2193,7 +2254,15 @@ static void kill_ubifs_super(struct super_block *s)
 	kill_anon_super(s);
 	kfree(c);
 }
-
+#if 0
+static int ubifs_reboot (struct super_block *s)
+{
+	kill_ubifs_super(s);
+}
+static struct notifier_block ubifs_reboot_notifier = {
+	.notifier_call = ubifs_reboot
+};
+#endif
 static struct file_system_type ubifs_fs_type = {
 	.name    = "ubifs",
 	.owner   = THIS_MODULE,

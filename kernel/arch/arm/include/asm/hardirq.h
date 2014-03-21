@@ -5,7 +5,11 @@
 #include <linux/threads.h>
 #include <asm/irq.h>
 
+#ifdef CONFIG_OTZONE_ASYNC_NOTIFY_SUPPORT
+#define NR_IPI 7
+#else
 #define NR_IPI	6
+#endif
 
 typedef struct {
 	unsigned int __softirq_pending;

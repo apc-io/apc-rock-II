@@ -35,7 +35,7 @@ extern	"C" {
 /*-------------------- EXPORTED PRIVATE CONSTANTS ----------------------------*/
 /* #define  HDMI_XXXX  1    *//*Example*/
 #define CONFIG_HDMI_INTERRUPT
-#define HDMI_PLUG_DELAY	        100	/* plug stable delay ms */
+#define HDMI_PLUG_DELAY	        300	/* plug stable delay ms */
 #define HDMI_CP_TIME		3	/* should more than 2 seconds */
 
 typedef enum {

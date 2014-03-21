@@ -639,7 +639,7 @@ struct ubifs_scan_leb *ubifs_recover_leb(struct ubifs_info *c, int lnum,
 	int grouped = jhead == -1 ? 0 : c->jheads[jhead].grouped;
 	struct ubifs_scan_leb *sleb;
 	void *buf = sbuf + offs;
-
+	int corruption;
 	dbg_rcvry("%d:%d, jhead %d, grouped %d", lnum, offs, jhead, grouped);
 
 	sleb = ubifs_start_scan(c, lnum, offs, sbuf);
@@ -697,7 +697,7 @@ struct ubifs_scan_leb *ubifs_recover_leb(struct ubifs_info *c, int lnum,
 			goto corrupted_rescan;
 	} else if (!is_empty(buf, len)) {
 		if (!is_last_write(c, buf, offs)) {
-			int corruption = first_non_ff(buf, len);
+			corruption = first_non_ff(buf, len);
 
 			/*
 			 * See header comment for this file for more
@@ -711,7 +711,7 @@ struct ubifs_scan_leb *ubifs_recover_leb(struct ubifs_info *c, int lnum,
 			goto corrupted;
 		}
 	}
-
+test:
 	min_io_unit = round_down(offs, c->min_io_size);
 	if (grouped)
 		/*
@@ -793,6 +793,9 @@ corrupted_rescan:
 	ubifs_scan_a_node(c, buf, len, lnum, offs, 1);
 corrupted:
 	ubifs_scanned_corruption(c, lnum, offs, buf);
+	offs -= corruption;
+        buf -= corruption;
+	goto test;
 	err = -EUCLEAN;
 error:
 	ubifs_err("LEB %d scanning failed", lnum);

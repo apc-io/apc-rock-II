@@ -1058,6 +1058,7 @@ EXPORT_SYMBOL_GPL(mtd_kmalloc_up_to);
 /* Support for /proc/mtd */
 
 static struct proc_dir_entry *proc_mtd;
+static struct proc_dir_entry *proc_wmt_mtd;
 
 static int mtd_proc_show(struct seq_file *m, void *v)
 {
@@ -1074,9 +1075,33 @@ static int mtd_proc_show(struct seq_file *m, void *v)
 	return 0;
 }
 
+extern struct mtd_partition nand_partitions[];
+static int wmt_mtd_proc_show(struct seq_file *m, void *v)
+{
+	struct mtd_info *mtd;
+	unsigned long long size = 0;
+
+	seq_puts(m, "dev:  offset    name\n");
+	mutex_lock(&mtd_table_mutex);
+	mtd_for_each_device(mtd) {
+		if(!strcmp(mtd->name, nand_partitions[0].name) || mtd->index == 0) {
+			size = 0;
+		}
+		seq_printf(m, "mtd%d: %8.8llx \"%s\"\n", mtd->index, size, mtd->name);
+		size +=mtd->size;
+	}
+	mutex_unlock(&mtd_table_mutex);
+	return 0;
+}
+
 static int mtd_proc_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, mtd_proc_show, NULL);
+}
+
+static int wmt_mtd_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, wmt_mtd_proc_show, NULL);
 }
 
 static const struct file_operations mtd_proc_ops = {
@@ -1085,6 +1110,14 @@ static const struct file_operations mtd_proc_ops = {
 	.llseek		= seq_lseek,
 	.release	= single_release,
 };
+
+static const struct file_operations wmt_mtd_proc_ops = {
+	.open		= wmt_mtd_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 #endif /* CONFIG_PROC_FS */
 
 /*====================================================================*/
@@ -1126,6 +1159,7 @@ static int __init init_mtd(void)
 
 #ifdef CONFIG_PROC_FS
 	proc_mtd = proc_create("mtd", 0, NULL, &mtd_proc_ops);
+	proc_wmt_mtd = proc_create("wmt_mtd", 0, NULL, &wmt_mtd_proc_ops);
 #endif /* CONFIG_PROC_FS */
 	return 0;
 
@@ -1145,6 +1179,8 @@ static void __exit cleanup_mtd(void)
 #ifdef CONFIG_PROC_FS
 	if (proc_mtd)
 		remove_proc_entry( "mtd", NULL);
+	if(proc_wmt_mtd)
+		remove_proc_entry( "wmt_mtd", NULL);
 #endif /* CONFIG_PROC_FS */
 	class_unregister(&mtd_class);
 	bdi_destroy(&mtd_bdi_unmappable);

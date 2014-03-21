@@ -50,11 +50,10 @@
  
 	 ldr r4,  [\rx, #0x20]           @ FIFO control register
 	 tst r4,  #0x01                  @ Check FIFOEN bit
-	 movs r4,  #0x1000
+	 mov r4,  #0x1000
 	 strne   \rd, [\rx, r4]     @ TX FIFO
 	 streq \rd, [\rx]              @ Transmit data register
-	 streq \rd, [\rx]              @ Transmit data register
- 
+	  
 	 ldmfd sp!,{r4}
 	 .endm
 

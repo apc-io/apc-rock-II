@@ -221,11 +221,24 @@ out_free:
 	kfree(desc);
 out_put_ubi:
 	ubi_put_device(ubi);
-	dbg_err("cannot open device %d, volume %d, error %d",
+	ubi_err("cannot open device %d, volume %d, error %d",
 		ubi_num, vol_id, err);
 	return ERR_PTR(err);
 }
 EXPORT_SYMBOL_GPL(ubi_open_volume);
+
+void ubi_update_volume(struct ubi_volume_desc *desc){
+
+	struct ubi_volume *vol = desc->vol;
+	struct ubi_device *ubi = vol->ubi;
+
+	#ifdef CONFIG_MTD_UBI_FASTMAP
+	ubi->fm_idx = 0;
+	ubi_update_fastmap(ubi);
+	ubi->fm_idx = 1;
+	#endif
+}
+EXPORT_SYMBOL_GPL(ubi_update_volume);
 
 /**
  * ubi_open_volume_nm - open UBI volume by name.
@@ -320,7 +333,20 @@ struct ubi_volume_desc *ubi_open_volume_path(const char *pathname, int mode)
 	return ERR_PTR(-ENODEV);
 }
 EXPORT_SYMBOL_GPL(ubi_open_volume_path);
+void ubi_set_volume(struct ubi_volume_desc *desc)
+{
+	struct ubi_volume *vol = desc->vol;
+	struct ubi_device *ubi = vol->ubi;
 
+	spin_lock(&ubi->volumes_lock);
+	ubi->ro_mode = 1;
+	spin_unlock(&ubi->volumes_lock);
+
+	put_device(&vol->dev);
+	ubi_put_device(ubi);
+	module_put(THIS_MODULE);
+}
+EXPORT_SYMBOL_GPL(ubi_set_volume);
 /**
  * ubi_close_volume - close UBI volume.
  * @desc: volume descriptor
@@ -419,6 +445,42 @@ int ubi_leb_read(struct ubi_volume_desc *desc, int lnum, char *buf, int offset,
 }
 EXPORT_SYMBOL_GPL(ubi_leb_read);
 
+int ubi_leb_read_oob(struct ubi_volume_desc *desc, int lnum, void *buf, int offset, 
+		int len, void *spare)
+{
+	struct ubi_volume *vol = desc->vol;
+	struct ubi_device *ubi = vol->ubi;
+	int err, vol_id = vol->vol_id;
+
+	dbg_gen("read %d bytes from LEB %d:%d:%d", len, vol_id, lnum, offset);
+
+	if (vol_id < 0 || vol_id >= ubi->vtbl_slots || lnum < 0 ||
+	    lnum >= vol->used_ebs || offset < 0 || len < 0 ||
+	    offset + len > vol->usable_leb_size)
+		return -EINVAL;
+
+	if (vol->vol_type == UBI_STATIC_VOLUME) {
+		if (vol->used_ebs == 0)
+			/* Empty static UBI volume */
+			return 0;
+		if (lnum == vol->used_ebs - 1 &&
+		    offset + len > vol->last_eb_bytes)
+			return -EINVAL;
+	}
+	
+	if (vol->upd_marker)
+		return -EBADF;
+	if (len == 0)
+		return 0;
+	
+	err = ubi_eba_read_leb_oob(ubi, vol, lnum, buf, offset, len, spare);
+	if (err && mtd_is_eccerr(err) && vol->vol_type == UBI_STATIC_VOLUME) {
+		ubi_warn("mark volume %d as corrupted", vol_id);
+		vol->corrupted = 1;
+	}
+	return err;
+}
+EXPORT_SYMBOL_GPL(ubi_leb_read_oob);
 /**
  * ubi_leb_write - write data.
  * @desc: volume descriptor
@@ -426,11 +488,9 @@ EXPORT_SYMBOL_GPL(ubi_leb_read);
  * @buf: data to write
  * @offset: offset within the logical eraseblock where to write
  * @len: how many bytes to write
- * @dtype: expected data type
  *
  * This function writes @len bytes of data from @buf to offset @offset of
- * logical eraseblock @lnum. The @dtype argument describes expected lifetime of
- * the data.
+ * logical eraseblock @lnum.
  *
  * This function takes care of physical eraseblock write failures. If write to
  * the physical eraseblock write operation fails, the logical eraseblock is
@@ -447,7 +507,7 @@ EXPORT_SYMBOL_GPL(ubi_leb_read);
  * returns immediately with %-EBADF code.
  */
 int ubi_leb_write(struct ubi_volume_desc *desc, int lnum, const void *buf,
-		  int offset, int len, int dtype)
+		  int offset, int len)
 {
 	struct ubi_volume *vol = desc->vol;
 	struct ubi_device *ubi = vol->ubi;
@@ -466,8 +526,33 @@ int ubi_leb_write(struct ubi_volume_desc *desc, int lnum, const void *buf,
 	    offset & (ubi->min_io_size - 1) || len & (ubi->min_io_size - 1))
 		return -EINVAL;
 
-	if (dtype != UBI_LONGTERM && dtype != UBI_SHORTTERM &&
-	    dtype != UBI_UNKNOWN)
+	if (vol->upd_marker)
+		return -EBADF;
+
+	if (len == 0)
+		return 0;
+
+	return ubi_eba_write_leb(ubi, vol, lnum, buf, offset, len);
+}
+EXPORT_SYMBOL_GPL(ubi_leb_write);
+
+int ubi_leb_write_oob(struct ubi_volume_desc *desc, int lnum, const void *buf,
+		  int offset, int len, void *spare, int dtype)
+{
+	struct ubi_volume *vol = desc->vol;
+	struct ubi_device *ubi = vol->ubi;
+	int vol_id = vol->vol_id;
+
+	dbg_gen("write %d bytes to LEB %d:%d:%d", len, vol_id, lnum, offset);
+	if (vol_id < 0 || vol_id >= ubi->vtbl_slots)
+		return -EINVAL;
+
+	if (desc->mode == UBI_READONLY || vol->vol_type == UBI_STATIC_VOLUME)
+		return -EROFS;
+
+	if (lnum < 0 || lnum >= vol->reserved_pebs || offset < 0 || len < 0 ||
+	    offset + len > vol->usable_leb_size ||
+	    offset & (ubi->min_io_size - 1) || len & (ubi->min_io_size - 1))
 		return -EINVAL;
 
 	if (vol->upd_marker)
@@ -475,10 +560,9 @@ int ubi_leb_write(struct ubi_volume_desc *desc, int lnum, const void *buf,
 
 	if (len == 0)
 		return 0;
-
-	return ubi_eba_write_leb(ubi, vol, lnum, buf, offset, len, dtype);
+	return ubi_eba_write_leb_oob(ubi, vol, lnum, buf, offset, len, spare, dtype);
 }
-EXPORT_SYMBOL_GPL(ubi_leb_write);
+EXPORT_SYMBOL_GPL(ubi_leb_write_oob);
 
 /*
  * ubi_leb_change - change logical eraseblock atomically.
@@ -486,7 +570,6 @@ EXPORT_SYMBOL_GPL(ubi_leb_write);
  * @lnum: logical eraseblock number to change
  * @buf: data to write
  * @len: how many bytes to write
- * @dtype: expected data type
  *
  * This function changes the contents of a logical eraseblock atomically. @buf
  * has to contain new logical eraseblock data, and @len - the length of the
@@ -497,7 +580,7 @@ EXPORT_SYMBOL_GPL(ubi_leb_write);
  * code in case of failure.
  */
 int ubi_leb_change(struct ubi_volume_desc *desc, int lnum, const void *buf,
-		   int len, int dtype)
+		   int len)
 {
 	struct ubi_volume *vol = desc->vol;
 	struct ubi_device *ubi = vol->ubi;
@@ -515,17 +598,13 @@ int ubi_leb_change(struct ubi_volume_desc *desc, int lnum, const void *buf,
 	    len > vol->usable_leb_size || len & (ubi->min_io_size - 1))
 		return -EINVAL;
 
-	if (dtype != UBI_LONGTERM && dtype != UBI_SHORTTERM &&
-	    dtype != UBI_UNKNOWN)
-		return -EINVAL;
-
 	if (vol->upd_marker)
 		return -EBADF;
 
 	if (len == 0)
 		return 0;
 
-	return ubi_eba_atomic_leb_change(ubi, vol, lnum, buf, len, dtype);
+	return ubi_eba_atomic_leb_change(ubi, vol, lnum, buf, len);
 }
 EXPORT_SYMBOL_GPL(ubi_leb_change);
 
@@ -562,7 +641,7 @@ int ubi_leb_erase(struct ubi_volume_desc *desc, int lnum)
 	if (err)
 		return err;
 
-	return ubi_wl_flush(ubi);
+	return ubi_wl_flush(ubi, vol->vol_id, lnum);
 }
 EXPORT_SYMBOL_GPL(ubi_leb_erase);
 
@@ -626,7 +705,6 @@ EXPORT_SYMBOL_GPL(ubi_leb_unmap);
  * ubi_leb_map - map logical eraseblock to a physical eraseblock.
  * @desc: volume descriptor
  * @lnum: logical eraseblock number
- * @dtype: expected data type
  *
  * This function maps an un-mapped logical eraseblock @lnum to a physical
  * eraseblock. This means, that after a successful invocation of this
@@ -639,7 +717,7 @@ EXPORT_SYMBOL_GPL(ubi_leb_unmap);
  * eraseblock is already mapped, and other negative error codes in case of
  * other failures.
  */
-int ubi_leb_map(struct ubi_volume_desc *desc, int lnum, int dtype)
+int ubi_leb_map(struct ubi_volume_desc *desc, int lnum)
 {
 	struct ubi_volume *vol = desc->vol;
 	struct ubi_device *ubi = vol->ubi;
@@ -652,17 +730,13 @@ int ubi_leb_map(struct ubi_volume_desc *desc, int lnum, int dtype)
 	if (lnum < 0 || lnum >= vol->reserved_pebs)
 		return -EINVAL;
 
-	if (dtype != UBI_LONGTERM && dtype != UBI_SHORTTERM &&
-	    dtype != UBI_UNKNOWN)
-		return -EINVAL;
-
 	if (vol->upd_marker)
 		return -EBADF;
 
 	if (vol->eba_tbl[lnum] >= 0)
 		return -EBADMSG;
 
-	return ubi_eba_write_leb(ubi, vol, lnum, NULL, 0, 0, dtype);
+	return ubi_eba_write_leb(ubi, vol, lnum, NULL, 0, 0);
 }
 EXPORT_SYMBOL_GPL(ubi_leb_map);
 
@@ -719,6 +793,33 @@ int ubi_sync(int ubi_num)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(ubi_sync);
+
+/**
+ * ubi_flush - flush UBI work queue.
+ * @ubi_num: UBI device to flush work queue
+ * @vol_id: volume id to flush for
+ * @lnum: logical eraseblock number to flush for
+ *
+ * This function executes all pending works for a particular volume id / logical
+ * eraseblock number pair. If either value is set to %UBI_ALL, then it acts as
+ * a wildcard for all of the corresponding volume numbers or logical
+ * eraseblock numbers. It returns zero in case of success and a negative error
+ * code in case of failure.
+ */
+int ubi_flush(int ubi_num, int vol_id, int lnum)
+{
+	struct ubi_device *ubi;
+	int err = 0;
+
+	ubi = ubi_get_device(ubi_num);
+	if (!ubi)
+		return -ENODEV;
+
+	err = ubi_wl_flush(ubi, vol_id, lnum);
+	ubi_put_device(ubi);
+	return err;
+}
+EXPORT_SYMBOL_GPL(ubi_flush);
 
 BLOCKING_NOTIFIER_HEAD(ubi_notifiers);
 

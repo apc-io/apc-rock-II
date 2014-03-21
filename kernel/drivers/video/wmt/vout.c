@@ -333,6 +333,19 @@ void vout_info_set_fixed_timing(int no, struct fb_videomode *vmode)
 	info->fixed_vmode = vmode;
 }
 
+govrh_mod_t *vout_info_get_govr(int no)
+{
+	vout_info_t *info;
+	govrh_mod_t *govr;
+
+	info = vout_info_get_entry(no);
+	govr = info->govr;
+	if (g_vpp.virtual_display || (g_vpp.dual_display == 0)) {
+		govr = (hdmi_get_plugin()) ? p_govrh : p_govrh2;
+	}
+	return govr;
+}
+
 int vout_check_ratio_16_9(unsigned int resx, unsigned int resy)
 {
 	int val;
@@ -480,7 +493,7 @@ int vout_find_match_mode(int fbnum,
 	}
 
 	vo_mask = vout_get_mask(info);
-	if (vo_mask == 0)
+	if (vo_mask == 0 && vmode->pixclock)
 		return 0;
 
 	/* find plugin or first vout */
@@ -546,6 +559,9 @@ int vout_find_edid_support_mode(
 	int i, cnt;
 	struct fb_videomode *p;
 	unsigned int w, h, f, option;
+
+    if ((*resx == 720) && (*resy == 480) && (*fps == 50))
+        *fps = 60;
 
 	for (i = 0, cnt = 0; ; i++) {
 		if (vpp_videomode[i].pixclock == 0)
@@ -709,6 +725,9 @@ int vout_config(unsigned int mask,
 		return 0;
 
 	/* option for interface & device config */
+    info->resx = vmode->xres;
+    info->resy = vmode->yres;
+    info->fps = (vmode->refresh == 59) ? 60 : vmode->refresh;
 	info->option = (vmode->vmode & FB_VMODE_INTERLACED) ?
 					VPP_OPT_INTERLACE : 0;
 	info->option |= (vmode->sync & FB_SYNC_HOR_HIGH_ACT) ?
@@ -824,11 +843,8 @@ char *vout_get_edid(int no)
 	}
 
 	if (ret == 0) {
-		vout_info_t *info;
-
 		DBG_DETAIL("edid read\n");
 		vout_change_status(vo, VPP_VOUT_STS_EDID, 1);
-		info = vout_get_info_entry((g_vpp.virtual_display) ? 1 : no);
 		return vo->edid;
 	} else {
 		DBG_MSG("read edid fail\n");

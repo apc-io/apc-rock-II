@@ -47,23 +47,30 @@ WonderMedia Technologies, Inc.
 #include "mmc_atsmb.h"
 //#include <mach/multicard.h>
 #include <mach/irqs.h>
+#include <linux/mmc/sdio.h>
+#include <linux/gpio.h>
+#include <mach/wmt_iomux.h>
+
+
+
+#define MMC2_SDIO_EXT_IRQ (1) /* use sdio ext irq or not */
+
+#if MMC2_SDIO_EXT_IRQ
+static int is_mtk6620 = 0;
+static unsigned int mmc2_sdio_ext_irq = 0;
+static unsigned long mmc2_sdio_ext_irq_flags = 0;
+enum ext_irq_flag {
+    IN_SUSPEND = 0,
+    IRQ_IN_SUSPEND = 1,
+};
+int wmt_mtk6620_intr=0xf; //gpio 15
+#endif
+
+
+static int is_nmc1000 = 0x0;
+static int is_ap6330 = 0;
 
 #define mprintk  
-
-//add AP6330 Drvier Start
-int get_sdio_uboot_env(void);
-void bcm_wlan_power_off(int off);
-void bcm_wlan_power_on(int on);
-void wmt_set_wifi_irq(int enable);
-int wmt_is_wifi_irq(void);
-extern void pmc_disable_wakeup_event(unsigned int wakeup_event);
-extern void pmc_enable_wakeup_event(unsigned int wakeup_event,unsigned int type);
-int SD2_card_state = 0; /*0: card remove >=1: card enable*/
-int wmt_wifi_disabled = 0;
-sdio_pwr_uboot_env_t sdio_pwr_env;
-sdio_int_uboot_env_t sdio_int_env;
-sdio_wakeup_uboot_env_t sdio_wakeup_env;
-//add AP6330 Drvier End
 
 #if 0
 #define DBG(host, fmt, args...)	\
@@ -547,6 +554,7 @@ static inline void atsmb2_prep_cmd(struct atsmb_host *host,
 									unsigned char cmd_type,
 									unsigned char op)
 {
+	unsigned long spl_flags; /* add by th */
 	DBG("[%s] s\n",__func__);
     
 	/*set cmd operation code and arguments.*/
@@ -649,7 +657,11 @@ static inline void atsmb2_prep_cmd(struct atsmb_host *host,
 
 
 	*ATSMB2_INT_MASK_0 |= int_maks_0;
+
+	/* spin_lock add by th for fix sdio irq*/	
+	spin_lock_irqsave(&host->lock, spl_flags);
 	*ATSMB2_INT_MASK_1 |= int_mask_1;
+	spin_unlock_irqrestore(&host->lock, spl_flags);
 
 	//Set Auto stop for Multi-block access
 	if(cmd_type == 3 || cmd_type == 4)
@@ -680,7 +692,6 @@ static inline void atsmb2_prep_cmd(struct atsmb_host *host,
 
 static inline void atsmb2_issue_cmd(void)
 {
-	wmb();
 	*ATSMB2_CTL |= ATSMB_START;
 	wmb();	
 }
@@ -701,11 +712,12 @@ atsmb2_request_end(struct atsmb_host *host, struct mmc_request *mrq)
 	 * Need to drop the host lock here; mmc_request_done may call
 	 * back into the driver...
 	 */
-	spin_unlock(&host->lock);
+	//kevin delete spin lock
+	//spin_unlock(&host->lock);
 	/*DBG("100");*/
 	mmc_request_done(host->mmc, mrq);
 	/*DBG("101\n");*/
-	spin_lock(&host->lock);
+	//spin_lock(&host->lock);
 	DBG("[%s] e\n",__func__);
 }
 
@@ -730,6 +742,31 @@ void atsmb2_wait_done(void *data)
 	DBG("[%s] e\n",__func__);
 }
 
+/**********************************************************************
+wait_data_busy
+waiting for previous data transfer done
+**********************************************************************/
+void wait_data_busy(struct mmc_command *cmd)
+{
+	int wait_count = 500000;
+
+	switch(cmd->opcode) {
+		case MMC_GO_IDLE_STATE:
+		case MMC_STOP_TRANSMISSION:
+		case MMC_SEND_STATUS:
+		case MMC_GO_INACTIVE_STATE:
+			break;
+		default:
+			do {
+				if (*ATSMB2_CURBLK_CNT & (0x01<<24))
+					break;
+
+				udelay(1);
+
+			} while (--wait_count);
+        }
+
+}
 /**********************************************************************
 Name  	 : atsmb2_start_data
 Function    : If we start data, there must be only four cases.
@@ -1033,11 +1070,9 @@ static void atsmb2_start_data(struct atsmb_host *host)
 						 dma_mask,
 						 host);
 
-		/*Before write command pull busy state down, can't execute next 
-		command for SDIO device. because HW don't support SDIO R1b response clear
-		add by Eason 2012/08/09*/
-		while(!(*ATSMB2_CURBLK_CNT & BIT24))
-				;
+		wait_data_busy(cmd);
+	        //sync from tp,fix broadcom 6181 wifi dongle crash.
+        	//udelay(10); 
 		atsmb2_issue_cmd();
 		wait_for_completion_timeout(&complete,
 			ATSMB_TIMEOUT_TIME*sg_transfer_len); /*ISR would completes it.*/
@@ -1096,9 +1131,10 @@ static void atsmb2_start_data(struct atsmb_host *host)
 end:
 	dma_unmap_sg(&(host->mmc->class_dev), data->sg, data->sg_len,
 			((data->flags)&MMC_DATA_READ) ? DMA_FROM_DEVICE : DMA_TO_DEVICE);
-	spin_lock(&host->lock);
+	//kevin delete spin lock
+	//spin_lock(&host->lock);
 	atsmb2_request_end(host, host->mrq);
-	spin_unlock(&host->lock);
+	//spin_unlock(&host->lock);
 	DBG("[%s] e\n",__func__);
 }
 
@@ -1407,6 +1443,13 @@ out:
 	return IRQ_HANDLED;
 }
 
+/* add by th for ack interrupt */
+void eagle_ack_interrupt(void)
+{
+	*ATSMB2_SD_STS_1 |= ATSMB_SDIO_INT;
+}
+EXPORT_SYMBOL(eagle_ack_interrupt);
+
 /**********************************************************************
 Name  	 : atsmb2_regular_isr
 Function    :.
@@ -1622,7 +1665,8 @@ irqreturn_t atsmb2_regular_isr(int irq, void *dev_id)
 
 	/*clear INT status. In fact, we will clear again before issuing new command.*/
 	*ATSMB2_SD_STS_0 |= status_0;
-	*ATSMB2_SD_STS_1 |= status_1;
+	//*ATSMB2_SD_STS_1 |= status_1;
+	*ATSMB2_SD_STS_1 |= ((status_1 & mask_1) | (status_1 & (~ATSMB_SDIO_INT)));
 
 	/* when read CRC error occur, and the status can't write one to clear.
 	 * To clear read CRC error status , can do software reset. This is HW bug. 2013/3/21*/
@@ -1697,6 +1741,81 @@ void atsmb2_dump_host_regs(struct mmc_host *mmc)
 }
 EXPORT_SYMBOL(atsmb2_dump_host_regs);
 
+
+
+
+#if MMC2_SDIO_EXT_IRQ
+static irqreturn_t mtk6620_sdio_ext_irq (int irq, void *dev_id)
+{
+    struct mmc_host *mmc = dev_id;
+
+	if(!is_gpio_irqenable(wmt_mtk6620_intr) || !gpio_irqstatus(wmt_mtk6620_intr))
+			return IRQ_NONE;	
+
+    smp_rmb();
+    if (unlikely(test_bit(IN_SUSPEND, &mmc2_sdio_ext_irq_flags))) {
+        //disable_irq_nosync(mmc2_sdio_ext_irq);
+        wmt_gpio_mask_irq(wmt_mtk6620_intr);
+
+        set_bit(IRQ_IN_SUSPEND, &mmc2_sdio_ext_irq_flags);
+        smp_wmb();
+
+        printk( "%s: irq in suspend, defer & disable_irq(%d)\n",
+            mmc_hostname(mmc), mmc2_sdio_ext_irq);
+        wmt_gpio_ack_irq(wmt_mtk6620_intr);
+        return IRQ_HANDLED;
+    }
+    //printk( "%s: irq happen, call mmc_signal_sdio_irq\n", mmc_hostname(mmc));
+    mmc_signal_sdio_irq(mmc);
+    wmt_gpio_ack_irq(wmt_mtk6620_intr);
+    return IRQ_HANDLED;
+}
+
+static void mtk6620_setup_sdio_ext_irq (struct mmc_host *mmc)
+{
+    int ret;
+        printk(KERN_WARNING "setup sdio ext irq but mmc2_sdio_ext_irq(%d) != 0!\n", mmc2_sdio_ext_irq);
+
+    if (0 != mmc2_sdio_ext_irq) {
+        return;
+    }
+
+	wmt_gpio_setpull(wmt_mtk6620_intr,WMT_GPIO_PULL_UP);
+
+//    s3c_gpio_setpull(MMC2_SDIO_EINT_PIN, S3C_GPIO_PULL_NONE);
+//    s3c_gpio_cfgpin(MMC2_SDIO_EINT_PIN, S3C_GPIO_SFN(0xF));
+
+    mmc2_sdio_ext_irq = 1;//gpio_to_irq(MMC2_SDIO_EINT_PIN);
+
+	wmt_gpio_mask_irq(wmt_mtk6620_intr);
+   	//clear_gpio26_irq_state();
+	wmt_gpio_ack_irq(wmt_mtk6620_intr);
+
+
+    ret = request_irq(IRQ_GPIO, mtk6620_sdio_ext_irq, IRQF_SHARED,"mmc2_sdio_ext_irq", mmc);
+    if (ret) {
+        printk( "request_irq(%d, 0x%p, IRQF_TRIGGER_LOW) fail(%d)!!\n",
+            mmc2_sdio_ext_irq, mtk6620_sdio_ext_irq, ret);
+        mmc2_sdio_ext_irq = 0;
+        return;
+    }
+
+	/*clear int status register before enable this int pin*/
+	wmt_gpio_ack_irq(wmt_mtk6620_intr);
+	/*enable this int pin*/
+	wmt_gpio_unmask_irq(wmt_mtk6620_intr);
+
+//    enable_irq_wake(mmc2_sdio_ext_irq);
+    printk("%s: using sdio_ext_irq and enable_irq_wake(%d) gpio(%d) IRQ_EINT(%d)\n",
+        mmc_hostname(mmc), mmc2_sdio_ext_irq, wmt_mtk6620_intr,
+        (IRQ_GPIO));
+    return;
+}
+#endif /* MMC2_SDIO_EXT_IRQ */
+
+
+
+
 /**********************************************************************
 Name  	 : atsmb2_enable_sdio_irq
 Function    :
@@ -1714,17 +1833,66 @@ static void atsmb2_enable_sdio_irq(struct mmc_host *mmc, int enable)
 
 	DBG("[%s] s enable = %d *ATSMB2_INT_MASK_1 = %x\n",__func__,enable,*ATSMB2_INT_MASK_1);
 	spin_lock_irqsave(&host->lock, flags);
+
+
+#if MMC2_SDIO_EXT_IRQ
+    if (is_mtk6620) {
+        if (enable) {
+            if (likely(0 != mmc2_sdio_ext_irq)) {
+                //enable_irq(mmc2_sdio_ext_irq);
+                wmt_gpio_unmask_irq(wmt_mtk6620_intr);
+            }
+            else {
+                mtk6620_setup_sdio_ext_irq(mmc);
+            }
+        }
+        else {
+            smp_rmb();
+            if (unlikely(test_and_clear_bit(IRQ_IN_SUSPEND, &mmc2_sdio_ext_irq_flags))) {
+                smp_wmb();
+                printk("%s: irq already disabled when being deferred(%d)\n",
+                    mmc_hostname(host->mmc), mmc2_sdio_ext_irq);
+                /* do nothing */
+            }
+            else {
+                //disable_irq_nosync(mmc2_sdio_ext_irq);
+                wmt_gpio_mask_irq(wmt_mtk6620_intr);
+            }
+        }
+        goto out;
+    }
+#endif /* MMC2_SDIO_EXT_IRQ */
+
+
     
 	if (enable) {
 		*ATSMB2_INT_MASK_1 |= ATSMB_SDIO_EN;
 	} else {
 		*ATSMB2_INT_MASK_1 &= ~ATSMB_SDIO_EN;
 	}
-
+out:
 	spin_unlock_irqrestore(&host->lock, flags);
     DBG("[%s] e\n",__func__);
     
 }
+void wmt_detect_sdio2(void){
+
+	if(mmc2_host_attr!=NULL){
+
+		struct atsmb_host *host = mmc_priv(mmc2_host_attr);
+		
+		mmc_detect_change(host->mmc, HZ/2);
+	}
+}
+
+
+void force_remove_sdio2(void)
+{
+	if(mmc2_host_attr!=NULL)
+		mmc_force_remove_card(mmc2_host_attr);
+}
+EXPORT_SYMBOL(wmt_detect_sdio2);
+EXPORT_SYMBOL(force_remove_sdio2);
 /**********************************************************************
 Name  	 : atsmb2_request
 Function    :.
@@ -1761,7 +1929,6 @@ static void atsmb2_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	} else {
 		atsmb2_start_cmd(host);
     }
-
 	DBG("[%s] e\n",__func__);
 }
 /**********************************************************************
@@ -1809,17 +1976,30 @@ static void atsmb2_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	unsigned long flags;
 	DBG("[%s] s\n",__func__);
 	spin_lock_irqsave(&host->lock, flags);
+#if MMC2_SDIO_EXT_IRQ
+    if(is_mtk6620){
+        if ((ios->power_mode == MMC_POWER_OFF)) {
+            if (0 != mmc2_sdio_ext_irq) {
+                printk("%s: set mmc2 MMC_POWER_OFF disable_irq_wake & free_irq(%d)!\n", __func__, mmc2_sdio_ext_irq);
+                //disable_irq_wake(mmc2_sdio_ext_irq);
+                wmt_gpio_mask_irq(wmt_mtk6620_intr);
+                free_irq(IRQ_GPIO, host->mmc);
+                mmc2_sdio_ext_irq = 0;
+            }
+        }
+    }
+#endif /* MMC2_SDIO_EXT_IRQ */
+
 
 	if (ios->power_mode == MMC_POWER_OFF) {
 		if (MMC2_DRIVER_VERSION == MMC_DRV_3498) {
-			if (SD2_function != SDIO_WIFI) {
 			/* stop SD output clock */
 			*ATSMB2_BUS_MODE &= ~(ATSMB_CST);
 
 			/*  disable SD Card power  */
 			/*set SD2 power pin as GPO pin*/
             if (SD2_function == SDIO_WIFI)
-                GPIO_OC_GP0_BYTE_VAL |= BIT6;
+                ;//GPIO_OC_GP0_BYTE_VAL |= BIT6;
             else {
 				GPIO_CTRL_GP19_SD2_BYTE_VAL |= GPIO_SD2_POWER;
 				GPIO_OC_GP19_SD2_BYTE_VAL|= GPIO_SD2_POWER;
@@ -1847,14 +2027,12 @@ static void atsmb2_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 			/*  Config SD2 to GPIO  */
 			GPIO_OC_GP19_SD2_BYTE_VAL |= SD2_PIN;
 		}
-   }
 	} else if (ios->power_mode == MMC_POWER_UP) {
 		if (MMC2_DRIVER_VERSION == MMC_DRV_3498) {
 			/*  disable SD Card power  */
 			/*set SD2 power pin as GPO pin*/
-     if (SD2_function != SDIO_WIFI) {
 			if (SD2_function == SDIO_WIFI)
-				GPIO_OC_GP0_BYTE_VAL |= BIT6;
+				;//GPIO_OC_GP0_BYTE_VAL |= BIT6;
             else {
 				GPIO_CTRL_GP19_SD2_BYTE_VAL |= GPIO_SD2_POWER;
 				GPIO_OC_GP19_SD2_BYTE_VAL |= GPIO_SD2_POWER;
@@ -1871,8 +2049,8 @@ static void atsmb2_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 				GPIO_OD_GP19_SD2_BYTE_VAL |= GPIO_SD2_POWER;
 
             /*  Config SD PIN share  */
-			if (SD2_function != SDIO_WIFI) 
-			PIN_SHARING_SEL_4BYTE_VAL |= GPIO_SD2_PinShare;
+			//kevin delete for dvfs
+			//PIN_SHARING_SEL_4BYTE_VAL |= GPIO_SD2_PinShare;
 
 			/* do not config GPIO_SD2_CD because ISR has already run,
 			 * config card detect will issue ISR storm.
@@ -1888,20 +2066,20 @@ static void atsmb2_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 
 			/* Pull up/down resister of SD Bus */
            /*Disable Clock & CMD Pull enable*/
-			PULL_EN_GP19_SD2_BYTE_VAL &= ~(GPIO_SD2_Clock | GPIO_SD2_Command);
+			PULL_EN_GP19_SD2_BYTE_VAL &= ~(GPIO_SD2_Clock );
 
 			/*Set CD ,WP ,DATA pin pull up*/
 			if (SD2_function == SDIO_WIFI) {
 				PULL_CTRL_GP23_I2C3_BYTE_VAL &= ~GPIO_SD2_CD; /*pull down card always in slot*/
-				PULL_CTRL_GP19_SD2_BYTE_VAL |= (GPIO_SD2_Data | GPIO_SD2_WriteProtect);
+				PULL_CTRL_GP19_SD2_BYTE_VAL |= (GPIO_SD2_Data | GPIO_SD2_WriteProtect|GPIO_SD2_Command);
 			} else {
 				PULL_CTRL_GP23_I2C3_BYTE_VAL |= GPIO_SD2_CD;
-				PULL_CTRL_GP19_SD2_BYTE_VAL |= (GPIO_SD2_Data | GPIO_SD2_WriteProtect);
+				PULL_CTRL_GP19_SD2_BYTE_VAL |= (GPIO_SD2_Data | GPIO_SD2_WriteProtect|GPIO_SD2_Command);
             }
 
 			/*Enable CD ,WP ,DATA  internal pull*/
 			PULL_EN_GP23_I2C3_BYTE_VAL |= GPIO_SD2_CD;
-			PULL_EN_GP19_SD2_BYTE_VAL |= (GPIO_SD2_Data | GPIO_SD2_WriteProtect);
+			PULL_EN_GP19_SD2_BYTE_VAL |= (GPIO_SD2_Data | GPIO_SD2_WriteProtect|GPIO_SD2_Command);
 
 			spin_unlock_irqrestore(&host->lock, flags);
 			msleep(100);
@@ -1924,8 +2102,6 @@ static void atsmb2_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 			GPIO_CTRL_GP23_I2C3_BYTE_VAL &= ~GPIO_SD2_CD;
 			GPIO_CTRL_GP19_SD2_BYTE_VAL &= ~SD2_PIN;
 		}
-   //     }
-   }
 	} else {
 		/*nothing to do when powering on.*/
 	}
@@ -1958,16 +2134,7 @@ static void atsmb2_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	DBG("[%s] e\n",__func__);
 }
 
-/**********************************************************************
-Name  	 : atsmb2_get_cd
-Function    :
-Calls		:
-Called by	:
-Parameter :
-returns	: 
-Author 	 : Eason Chien
-History	: 2012/07/26
-***********************************************************************/
+
 static const struct mmc_host_ops atsmb2_ops = {
 	.request	= atsmb2_request,
 	.set_ios	= atsmb2_set_ios,
@@ -2007,9 +2174,9 @@ static int __init atsmb2_probe(struct platform_device *pdev)
 	auto_pll_divisor(DEV_SDMMC2, CLK_ENABLE, 0, 0);
 
 	if (MMC2_DRIVER_VERSION == MMC_DRV_3498) {
-		/* enable SD2 PIN share */
-		if (SD2_function != SDIO_WIFI) 
-		  PIN_SHARING_SEL_4BYTE_VAL |= GPIO_SD2_PinShare;
+		/* enable SD1 PIN share */
+		//kevin delete for dvfs
+		//PIN_SHARING_SEL_4BYTE_VAL |= GPIO_SD2_PinShare;
 
 		/* Pull up/down resister of SD CD */
 		if (SD2_function == SDIO_WIFI) {
@@ -2064,11 +2231,15 @@ static int __init atsmb2_probe(struct platform_device *pdev)
 
 	mmc_host->f_min = 390425; /*390.425Hz = 400MHz/64/16*/
 	mmc_host->f_max = 50000000; /* in fact, the max frequency is 400MHz( = 400MHz/1/1)*/
-	mmc_host->caps = MMC_CAP_4_BIT_DATA | MMC_CAP_SD_HIGHSPEED | MMC_CAP_MMC_HIGHSPEED | MMC_CAP_SDIO_IRQ	
-                    |MMC_CAP_NONREMOVABLE;/* |MMC_CAP_8_BIT_DATA;*/	//zhf: marked by James Tian
-	/* keep power while host suspended 1:keep power, 0:otherwise 
-	added by Eason 2012/09/21*/
+	
+	if(!is_nmc1000){
+		mmc_host->caps = MMC_CAP_4_BIT_DATA | MMC_CAP_SD_HIGHSPEED | MMC_CAP_MMC_HIGHSPEED | MMC_CAP_SDIO_IRQ| MMC_CAP_NONREMOVABLE;	
+	}else{
+		mmc_host->caps = MMC_CAP_4_BIT_DATA | MMC_CAP_SD_HIGHSPEED | MMC_CAP_MMC_HIGHSPEED | MMC_CAP_SDIO_IRQ| MMC_CAP_NONREMOVABLE;	
+	}
+       /* |MMC_CAP_8_BIT_DATA;*/	//zhf: marked by James Tian
 	mmc_host->pm_caps |= MMC_PM_KEEP_POWER;	
+	mmc_host->pm_caps |= MMC_PM_WAKE_SDIO_IRQ;//add by kevinguan for mtk6620
 
 	mmc_host->max_segs = 128;	/*we use software sg. so we could manage even larger number.*/
 	
@@ -2137,7 +2308,7 @@ static int __init atsmb2_probe(struct platform_device *pdev)
 	/*enable card insertion interrupt and enable DMA and its Global INT*/
 	*ATSMB2_BLK_LEN |= (0xa000); /* also, we enable GPIO to detect card.*/
 	*ATSMB2_SD_STS_0 |= 0xff;
-	//*ATSMB2_INT_MASK_0 |= 0x80; /*or 0x40?*/ move Register HOST there, marded by Eason
+	*ATSMB2_INT_MASK_0 |= 0x80; /*or 0x40?*/
 
 	/*allocation dma descriptor*/
 	ret = atsmb2_alloc_desc(atsmb_host, sizeof(struct SD_PDMA_DESC_S) * MAX_DESC_NUM);
@@ -2147,14 +2318,10 @@ static int __init atsmb2_probe(struct platform_device *pdev)
 	}
 	printk(KERN_INFO "WMT ATSMB2 (AHB To SD/MMC2 Bus) controller registered!\n");
 
-	/*Register HOST, power control by framework config*/
-    if (SD2_function == SDIO_WIFI) {
-		//mmc_add_host(mmc_host,false);
-		  *ATSMB2_INT_MASK_0 &= ~0x80; /*if wifi and disable Slot device insertion*/
-	  }else {
-      mmc_add_host(mmc_host,true);
-		  *ATSMB2_INT_MASK_0 |= 0x80; /*if SD/MMC and enable Slot device insertion*/
-	  }
+    if (SD2_function == SDIO_WIFI)
+        mmc_add_host(mmc_host,false);
+    else
+        mmc_add_host(mmc_host,true);
 
     mmc2_host_attr = mmc_host;
 	DBG("[%s] e1\n",__func__);
@@ -2252,7 +2419,7 @@ Parameter :
 Author 	 : Leo Lee
 History	:
 ***********************************************************************/
-//int SD2_card_state = 0; /*0: card remove >=1: card enable*/
+int SD2_card_state = 0; /*0: card remove >=1: card enable*/
 
 #ifdef CONFIG_PM
 static int atsmb2_suspend(struct platform_device *pdev, pm_message_t state)
@@ -2265,15 +2432,45 @@ static int atsmb2_suspend(struct platform_device *pdev, pm_message_t state)
 	if (mmc) {
 		
 		if (SD2_function == SDIO_WIFI) {
-			if (SD2_card_state > 0) {
-				/*enable wakeup event in suspend mode*/
-				pmc_enable_wakeup_event(sdio_wakeup_env.gpio_wakeup_num, 0000);   
-				/*If enter suspend in power on, kepp power*/
-				mmc->pm_flags |= MMC_PM_KEEP_POWER;	
-			}
+			if (SD2_card_state > 0)
+				mmc_force_remove_card(mmc2_host_attr);
 		}
+#if MMC2_SDIO_EXT_IRQ
+        if (is_mtk6620) {
+            if (0 != mmc2_sdio_ext_irq) {
+                //if (mmc_try_claim_host(host->mmc)) {
+                if(true){
+                    set_bit(IN_SUSPEND, &mmc2_sdio_ext_irq_flags);
+                    printk(KERN_INFO "%s:in_suspend++\n", mmc_hostname(mmc));
+                }
+                else {
+                    printk(KERN_INFO "%s:claim host fail in suspend, return -EBUSY\n", mmc_hostname(mmc));
+                    return -EBUSY;
+                }
+            }
+        }
+#endif /* MMC2_SDIO_EXT_IRQ */
+		
 		/*struct atsmb_host *host = mmc_priv(mmc);*/
 		ret = mmc_suspend_host(mmc);
+
+#if MMC2_SDIO_EXT_IRQ
+        if (is_mtk6620) {
+            if (ret) {
+                printk("\n\n\n\n\n\n%s:mmc_suspend_host fail(%d)\n\n\n\n\n\n",
+                    mmc_hostname(mmc), ret);            
+                if (0 != mmc2_sdio_ext_irq) {
+                    clear_bit(IN_SUSPEND, &mmc2_sdio_ext_irq_flags);
+                    //mmc_release_host(host->mmc);
+
+                }
+                return ret;
+            }
+            
+        }
+#endif
+
+
 		if (ret == 0) {
 			/*disable all interrupt and clear status by resetting controller. */
 			*ATSMB2_BUS_MODE |= ATSMB_SFTRST;
@@ -2307,7 +2504,7 @@ static int atsmb2_resume(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct mmc_host *mmc = (struct mmc_host *)dev_get_drvdata(dev);
-	int ret = 0, i = 0;
+	int ret = 0;
 	DBG("[%s] s\n",__func__);
 
 	/*
@@ -2319,11 +2516,6 @@ static int atsmb2_resume(struct platform_device *pdev)
 		auto_pll_divisor(DEV_SDMMC2, CLK_ENABLE, 0, 0);
 
         udelay(1);
-		
-		/* enable SD2 PIN share */
-		if (SD2_function != SDIO_WIFI) 
-		  PIN_SHARING_SEL_4BYTE_VAL |= GPIO_SD2_PinShare;
-		        
 		/*enable card insertion interrupt and enable DMA and its Global INT*/
 		*ATSMB2_BUS_MODE |= ATSMB_SFTRST;
 		*ATSMB2_BLK_LEN |= (0xa000);
@@ -2338,61 +2530,62 @@ static int atsmb2_resume(struct platform_device *pdev)
 		//}
 #endif
         if (SD2_function == SDIO_WIFI) {
-    			if (SD2_card_state > 0) {
-		  		/*disable wakeup event in normal node*/
-			  	pmc_disable_wakeup_event(sdio_wakeup_env.gpio_wakeup_num);   
-      
-				  // Initial SD bus {
-  				/* SD Bus */
-/*
-	        GPIO_PULL_CTRL_GP13_SD3_BYTE_VAL |= GPIO_SD3_Data | GPIO_SD3_Command;
-  				GPIO_PULL_CTRL_GP13_SD3_BYTE_VAL &= ~GPIO_SD3_WriteProtect;
-	  			GPIO_PULL_EN_GP13_SD3_BYTE_VAL |= (GPIO_SD3_Data | GPIO_SD3_WriteProtect);	
-		  		GPIO_PULL_EN_GP13_SD3_BYTE_VAL &= ~GPIO_SD3_Clock;
-			  	GPIO_CTRL_GP13_SD3_BYTE_VAL &= ~(GPIO_SD3_Data | GPIO_SD3_WriteProtect | GPIO_SD3_Command | GPIO_SD3_Clock);
-*/
+            PULL_CTRL_GP23_I2C3_BYTE_VAL &= ~GPIO_SD2_CD; /*pull down CD*/
+            PULL_EN_GP23_I2C3_BYTE_VAL |= GPIO_SD2_CD;
 
-          PULL_CTRL_GP19_SD2_BYTE_VAL |= GPIO_SD2_Data | GPIO_SD2_Command;
-          PULL_CTRL_GP19_SD2_BYTE_VAL &= ~GPIO_SD2_WriteProtect;
-          PULL_EN_GP19_SD2_BYTE_VAL |= (GPIO_SD2_Data | GPIO_SD2_WriteProtect);	
-          PULL_EN_GP19_SD2_BYTE_VAL &= ~GPIO_SD2_Clock;
-          GPIO_CTRL_GP19_SD2_BYTE_VAL &= ~(GPIO_SD2_Data | GPIO_SD2_WriteProtect | GPIO_SD2_Command | GPIO_SD2_Clock);
-      
-				  /* WiFi Out-band INT */
-/*
-				GPIO_PULL_CTRL_GP22_UART_0_1_BYTE_VAL |= BIT6;
-				GPIO_PULL_EN_GP22_UART_0_1_BYTE_VAL |= BIT6;
-				GPIO_OC_GP22_UART_0_1_BYTE_VAL &= ~BIT6;
-				GPIO_CTRL_GP22_UART_0_1_BYTE_VAL |= BIT6;
-				UART1CTS_INT_REQ_TYPE_VAL = 0; //Low level trigger
-				GPIO_PIN_SHARING_SEL_4BYTE_VAL &= ~BIT14; //Select to UART1CTS
-					REG8_VAL(sdio_int_env.gpio_int_reg_gpio_pu) |= 1<<sdio_int_env.gpio_int_bitnum;
-					REG8_VAL(sdio_int_env.gpio_int_reg_gpio_pe) |= 1<<sdio_int_env.gpio_int_bitnum;
-					REG8_VAL(sdio_int_env.gpio_int_reg_gpio_oc) &= ~(1<<sdio_int_env.gpio_int_bitnum);
-					REG8_VAL(sdio_int_env.gpio_int_reg_gpio_en) |= 1<<sdio_int_env.gpio_int_bitnum;
-					REG8_VAL(sdio_int_env.gpio_int_reg_gpio_int) |= 0;
+			//kevin add for suspend&resume
+	        PULL_CTRL_GP19_SD2_BYTE_VAL |= GPIO_SD2_Data | GPIO_SD2_Command;
+			PULL_CTRL_GP19_SD2_BYTE_VAL &= ~GPIO_SD2_WriteProtect;
+			PULL_EN_GP19_SD2_BYTE_VAL |= (GPIO_SD2_Data | GPIO_SD2_WriteProtect|GPIO_SD2_Command);	
+			PULL_EN_GP19_SD2_BYTE_VAL &= ~GPIO_SD2_Clock;
+			GPIO_CTRL_GP19_SD2_BYTE_VAL &= ~(GPIO_SD2_Data | GPIO_SD2_WriteProtect | GPIO_SD2_Command | GPIO_SD2_Clock);
+			*ATSMB2_BUS_MODE |= ATSMB_CST;
+			msleep(20);
+			
 
-  				/* Enable SD2 clock */
-	  			*ATSMB2_BUS_MODE |= ATSMB_CST;						
-		  		msleep(10);
-			  	//} Initial SD bus
-      
-  				DBG("[%s] mmc_resume_host s\n",__func__);
-	  			mmc_detect_change(mmc2_host_attr, 1*HZ/2);
-		  		DBG("[%s] mmc_resume_host e\n",__func__);
-      
-			  	while (!mmc2_host_attr->card_scan_status) {
-				  	msleep(10);
-					  i++;
-					  if (i>100) {
-						  printk("%s, Scan timeout!!!\n",__func__);
-						  break;	
-					  }
-				  }
-			  }
-      }
-      
-	    ret = mmc_resume_host(mmc);
+			if (SD2_card_state > 0) {
+				printk("[%s] mmc_resume_host s\n",__func__);
+				mmc_detect_change(mmc2_host_attr, 1*HZ/2);
+				printk("[%s] mmc_resume_host e\n",__func__);
+			}
+
+
+#if MMC2_SDIO_EXT_IRQ
+            if (is_mtk6620) {
+                if (0 != mmc2_sdio_ext_irq) {
+                    /* sdhc goes back to normal working mode, after mtk6620_init() */
+                    clear_bit(IN_SUSPEND, &mmc2_sdio_ext_irq_flags);
+                    //mmc_release_host(host->mmc);
+                    printk(KERN_INFO "%s:in_suspend--\n", mmc_hostname(mmc));
+                }
+            }
+#endif /* MMC2_SDIO_EXT_IRQ */
+
+
+            
+			//kevin add for suspend&resume
+			ret = mmc_resume_host(mmc);
+
+
+#if MMC2_SDIO_EXT_IRQ
+            /* after mmc_resume_host(), sdio_func is also resumed */
+            if (is_mtk6620) {
+                if (0 != mmc2_sdio_ext_irq) {
+                    /* signal deferred irq if any */
+                    smp_rmb();
+                    if (unlikely(test_bit(IRQ_IN_SUSPEND, &mmc2_sdio_ext_irq_flags))) {
+                        printk(KERN_INFO "%s: signal deferred irq(%d)\n",
+                            mmc_hostname(mmc), mmc2_sdio_ext_irq);
+                        /* signal the deferred irq */
+                        mmc_signal_sdio_irq(mmc);
+                    }
+                }
+            }
+#endif
+
+        } else {
+		    ret = mmc_resume_host(mmc);
+        }
 	}
 
 	DBG("[%s] e\n",__func__);
@@ -2491,8 +2684,59 @@ static struct kobj_attribute atsmb2_state_attr = {	\
 	.store	= atsmb2_state_store,		\
 };
 
+#if MMC2_SDIO_EXT_IRQ
+
+static ssize_t atsmb2_intr_show(struct kobject *kobj, struct kobj_attribute *attr,
+			     char *buf)
+{
+    int ret = 0;
+    
+
+	ret = sprintf(buf, "%d\n", is_mtk6620);
+	printk("[%s]is_mtk6620 = %d\n",__func__,is_mtk6620);
+	return ret;
+}
+
+static ssize_t atsmb2_intr_store(struct kobject *kobj, struct kobj_attribute *attr,
+	       const char *buf, size_t n)
+{
+	int val;
+	if (sscanf(buf, "%d", &val) == 1) {
+        printk("[%s] val = %d\n",__func__,val);
+        if (val == 1) {
+        	if (gpio_request(wmt_mtk6620_intr, "mtk6620_wifi_intr") < 0) {
+        		printk("gpio(%d) mtk6620_wifi_intr gpio request fail\n", wmt_mtk6620_intr);
+                is_mtk6620 = 0;
+            	return -1;
+        	}
+        } else if (val == 0) {
+
+	        gpio_free(wmt_mtk6620_intr);
+        
+        }
+        is_mtk6620 = val;
+     
+        return n;
+	}
+	return -EINVAL;
+}
+
+static struct kobj_attribute atsmb2_intr_attr = {	\
+	.attr	= {				\
+		.name = __stringify(intr),	\
+		.mode = 0755,			\
+	},					\
+	.show	= atsmb2_intr_show,			\
+	.store	= atsmb2_intr_store,		\
+};
+#endif
+
+
 static struct attribute * g2[] = {
 	&atsmb2_state_attr.attr,
+#if MMC2_SDIO_EXT_IRQ
+	&atsmb2_intr_attr.attr,
+#endif
 	NULL,
 };
 
@@ -2506,6 +2750,7 @@ static int __init atsmb2_init(void)
 
 	int retval;
 	unsigned char buf[80];
+	unsigned char buf1[80];
 	int varlen = 80;
 	char *varname = "wmt.sd2.param";	
 	int temp = 0, sd_enable = 0; /*0 :disable 1:enable*/
@@ -2526,8 +2771,29 @@ static int __init atsmb2_init(void)
 		if (SD2_function < 0 || SD2_function >= SD_MAX_FUN)
 			return -ENODEV;
 	} else {
+	    //default is enable sdio wifi
+        temp = sd_enable = 1;
+        SD2_function = 1;
         printk(KERN_ALERT "Default wmt.sd2.param = %x:%d\n", temp, SD2_function);
+
     }
+    memset(buf,0,sizeof(buf));
+   varlen = 80;
+    retval = wmt_getsyspara("wmt.init.rc", buf, &varlen);
+	if (retval == 0) {
+		printk(KERN_ALERT"wmt.init.rc:%s\n",buf);
+		if(!strcmp(buf,"init_nmc1000.rc")){
+			is_nmc1000 = 0x01;
+			printk("is_nmc1000:%d",is_nmc1000);
+		}
+		if (!strcmp(buf, "init.bcm6330.rc"))
+		{
+			is_ap6330 = 1;
+			printk("is_ap6330:%d\n", is_ap6330);
+		}
+	} else {
+        	printk(KERN_ALERT "wmt.init.rc do not exit\n");
+    	}
 #endif
 	/*SD function disable*/
 	if (sd_enable != 1)
@@ -2541,10 +2807,8 @@ static int __init atsmb2_init(void)
 	ret = platform_driver_probe(&atsmb2_driver, atsmb2_probe);
 
     atsmb2_kobj = kobject_create_and_add("mmc2", NULL);
-	if (!atsmb2_kobj) {
-		DBG("[%s] e NG\n",__func__);
+	if (!atsmb2_kobj)
 		return -ENOMEM;
-	}
 	return sysfs_create_group(atsmb2_kobj, &attr2_group);
     
 	DBG("[%s] e\n",__func__);
@@ -2558,273 +2822,6 @@ static void __exit atsmb2_exit(void)
 	(void)platform_device_unregister(&wmt_sdmmc2_device);//add by jay,for modules support
 	DBG("[%s] e\n",__func__);
 }
-
-//add AP6330 Drvier Start
-/*
-wmt.gpo.wifi	Active SDIO WiFi Power
-<name>:<active>:<bitmap>:<ctraddr>:<ocaddr>:<odaddr>
-[S]<name>:= Pin name for the GPO(SDIO WiFi Power Control).
-[H]<active>:= 1 for active high, 0 for active low.
-[H]<bitmap>:= GPO bit position.
-[H]<ctraddr>:= GPO GPIO Enable Register Address.
-[H]<ocaddr>:= GPO Output Enable Register Address.
-[H]<odaddr>:= GPO Output Data Register Address.
-For example:
-setenv wmt.gpo.wifi 1:1:7:d811007e:d81100be:d81100fe
-
-wmt.sdiowifi.int	Active SDIO WiFi Interrupt
-<name>:<bitmap>:<ctraddr>:<ocaddr>:<odaddr>:<intaddr>:<intsaddr>:<peaddr>:<puaddr>
-[S]<name>:= Pin name for the GPO(SDIO WiFi Power Control).
-[H]<bitmap>:= GPO bit position.
-[H]<ctraddr>:= GPO GPIO Enable Register Address.
-[H]<ocaddr>:= GPO Output Enable Register Address.
-[H]<odaddr>:= GPO Output Data Register Address.
-[H]<intaddr>:= GPIO interrupt Register Address.
-[H]<intsaddr>:= GPIO interrupt Status Register Address.
-[H]<peaddr>:= GPIO Pull Enable Register Address.
-[H]<puaddr>:= GPIO Pull down/up Register Address.
-For example:
-setenv wmt.sdiowifi.int 15:7:d8110041:d8110081:d81100c1:d811030f:d8110361:d8110481:d81104c1
- 
-wmt.sdiowifi.wakeup Active SDIO WiFi Wake-up
-<name>:<bitmap>:<ctraddr>:<ocaddr>:<odaddr>:<intaddr>:<peaddr>:<puaddr>:<wakenum>
-[S]<name>:= Pin name for the GPO(SDIO WiFi Power Control).
-[H]<bitmap>:= GPO bit position.
-[H]<ctraddr>:= GPO GPIO Enable Register Address.
-[H]<ocaddr>:= GPO Output Enable Register Address.
-[H]<odaddr>:= GPO Output Data Register Address.
-[H]<intaddr>:= GPIO interrupt Register Address.
-[H]<peaddr>:= GPIO Pull Enable Register Address.
-[H]<puaddr>:= GPIO Pull down/up Register Address.
-[H]<wakenum>:= Wake-up event number.
-For example:
-setenv wmt.sdiowifi.wakeup 0:0:d811007e:d81100be:d81100fe:d81104be:d81104fe:1
-*/
-int get_sdio_uboot_env(void)
-{
-	unsigned char varbuf[100];
-	int varlen = 100;
-	memset(varbuf, 0, sizeof(varlen));
-	varlen = sizeof(varbuf);
-
- 	if (wmt_getsyspara("wmt.gpo.wifi", varbuf, &varlen)) {
-		return 1;
-	} else {
-		sscanf(varbuf, "%d:%d:%d:%08x:%08x:%08x",
-					&sdio_pwr_env.dev_num,
-					&sdio_pwr_env.gpio_pwr_active_level,
-					&sdio_pwr_env.gpio_pwr_bitnum,
-					&sdio_pwr_env.gpio_pwr_reg_gpio_en,
-					&sdio_pwr_env.gpio_pwr_reg_gpio_oc,
-					&sdio_pwr_env.gpio_pwr_reg_gpio_od
-		);
-		sdio_pwr_env.gpio_pwr_reg_gpio_en = GPIO_BASE_ADDR + (sdio_pwr_env.gpio_pwr_reg_gpio_en & 0xFFF);
-		sdio_pwr_env.gpio_pwr_reg_gpio_oc = GPIO_BASE_ADDR + (sdio_pwr_env.gpio_pwr_reg_gpio_oc & 0xFFF);
-		sdio_pwr_env.gpio_pwr_reg_gpio_od = GPIO_BASE_ADDR + (sdio_pwr_env.gpio_pwr_reg_gpio_od & 0xFFF);
-	}
-
-	memset(varbuf, 0, sizeof(varlen));
-	varlen = sizeof(varbuf);
- 	if (wmt_getsyspara("wmt.sdiowifi.int", varbuf, &varlen)) {
-		return 1;
-	} else {
-		sscanf(varbuf, "%d:%d:%08x:%08x:%08x:%08x:%08x:%08x:%08x",
-					&sdio_int_env.dev_num,
-					&sdio_int_env.gpio_int_bitnum,
-					&sdio_int_env.gpio_int_reg_gpio_en,
-					&sdio_int_env.gpio_int_reg_gpio_oc,
-					&sdio_int_env.gpio_int_reg_gpio_od,
-					&sdio_int_env.gpio_int_reg_gpio_int,
-					&sdio_int_env.gpio_int_reg_gpio_ints,
-					&sdio_int_env.gpio_int_reg_gpio_pe,
-					&sdio_int_env.gpio_int_reg_gpio_pu
-		);
-		sdio_int_env.gpio_int_reg_gpio_en = GPIO_BASE_ADDR + (sdio_int_env.gpio_int_reg_gpio_en & 0xFFF);
-		sdio_int_env.gpio_int_reg_gpio_oc = GPIO_BASE_ADDR + (sdio_int_env.gpio_int_reg_gpio_oc & 0xFFF);
-		sdio_int_env.gpio_int_reg_gpio_od = GPIO_BASE_ADDR + (sdio_int_env.gpio_int_reg_gpio_od & 0xFFF);
-		sdio_int_env.gpio_int_reg_gpio_int = GPIO_BASE_ADDR + (sdio_int_env.gpio_int_reg_gpio_int & 0xFFF);
-		sdio_int_env.gpio_int_reg_gpio_ints = GPIO_BASE_ADDR + (sdio_int_env.gpio_int_reg_gpio_ints & 0xFFF);
-		sdio_int_env.gpio_int_reg_gpio_pe = GPIO_BASE_ADDR + (sdio_int_env.gpio_int_reg_gpio_pe & 0xFFF);
-		sdio_int_env.gpio_int_reg_gpio_pu = GPIO_BASE_ADDR + (sdio_int_env.gpio_int_reg_gpio_pu & 0xFFF);
-	}
-
-	memset(varbuf, 0, sizeof(varlen));
-	varlen = sizeof(varbuf);
- 	if (wmt_getsyspara("wmt.sdiowifi.wakeup", varbuf, &varlen)) {
-		return 1;
-	} else {
-		sscanf(varbuf, "%d:%d:%08x:%08x:%08x:%08x:%08x:%d",
-					&sdio_wakeup_env.dev_num,
-					&sdio_wakeup_env.gpio_wakeup_bitnum,
-					&sdio_wakeup_env.gpio_wakeup_reg_gpio_en,
-					&sdio_wakeup_env.gpio_wakeup_reg_gpio_oc,
-					&sdio_wakeup_env.gpio_wakeup_reg_gpio_od,
-					&sdio_wakeup_env.gpio_wakeup_reg_gpio_pe,
-					&sdio_wakeup_env.gpio_wakeup_reg_gpio_pu,
-					&sdio_wakeup_env.gpio_wakeup_num
-		);
-		sdio_wakeup_env.gpio_wakeup_reg_gpio_en = GPIO_BASE_ADDR + (sdio_wakeup_env.gpio_wakeup_reg_gpio_en & 0xFFF);
-		sdio_wakeup_env.gpio_wakeup_reg_gpio_oc = GPIO_BASE_ADDR + (sdio_wakeup_env.gpio_wakeup_reg_gpio_oc & 0xFFF);
-		sdio_wakeup_env.gpio_wakeup_reg_gpio_od = GPIO_BASE_ADDR + (sdio_wakeup_env.gpio_wakeup_reg_gpio_od & 0xFFF);
-		sdio_wakeup_env.gpio_wakeup_reg_gpio_pe = GPIO_BASE_ADDR + (sdio_wakeup_env.gpio_wakeup_reg_gpio_pe & 0xFFF);
-		sdio_wakeup_env.gpio_wakeup_reg_gpio_pu = GPIO_BASE_ADDR + (sdio_wakeup_env.gpio_wakeup_reg_gpio_pu & 0xFFF);
-	}
-	return 0;
-}
-
-void bcm_wlan_power_on(int on)
-{
-	int i = 0;	
-	DBG("[%s] s\n",__func__);
-	/* enable SD2 PIN share */
-	PIN_SHARING_SEL_4BYTE_VAL &= ~GPIO_SD2_PinShare;
-
-	/* disable BT, set GPIO14(BT_RST_N) to Low */
-	PULL_CTRL_GP1_BYTE_VAL &= ~BIT6; //GPIO14 pull-down
-	PULL_EN_GP1_BYTE_VAL |= BIT6; //GPIO14 pull enable
-	GPIO_OD_GP1_BYTE_VAL &= ~BIT6; //GPIO14 output data = 0
-	GPIO_OC_GP1_BYTE_VAL |= BIT6; //Dedicated GPIO14 GPIO Output enable
-	GPIO_CTRL_GP1_BYTE_VAL |= BIT6; //Dedicated GPIO14 GPIO Enable
-
-	/* Set C32Kout output */
-	GPIO_OC_GP62_WAKEUP_SUS_BYTE_VAL |= BIT3; //WAKEUP3 signal GPIO Output Enable
-	GPIO_CTRL_GP62_WAKEUP_SUS_BYTE_VAL |= BIT3; //WAKEUP3 signal GPIO Enable
-	if (get_sdio_uboot_env()) {
-		return;
-	}
-
-	if (on == 1) {
-		bcm_wlan_power_off(1);
-		msleep(100);
-	}
-	/* WiFi Power */
-	REG8_VAL(sdio_pwr_env.gpio_pwr_reg_gpio_od) |= 1<<sdio_pwr_env.gpio_pwr_bitnum;
-	REG8_VAL(sdio_pwr_env.gpio_pwr_reg_gpio_oc) |= 1<<sdio_pwr_env.gpio_pwr_bitnum;
-	REG8_VAL(sdio_pwr_env.gpio_pwr_reg_gpio_en) |= 1<<sdio_pwr_env.gpio_pwr_bitnum;		
-	msleep(10);
-
-
-	/* SD Bus */
-  PULL_CTRL_GP19_SD2_BYTE_VAL |= GPIO_SD2_Data | GPIO_SD2_Command;
-	PULL_CTRL_GP19_SD2_BYTE_VAL &= ~GPIO_SD2_WriteProtect;
-	PULL_EN_GP19_SD2_BYTE_VAL |= (GPIO_SD2_Data | GPIO_SD2_WriteProtect);	
-	PULL_EN_GP19_SD2_BYTE_VAL &= ~GPIO_SD2_Clock;
-	GPIO_CTRL_GP19_SD2_BYTE_VAL &= ~(GPIO_SD2_Data | GPIO_SD2_WriteProtect | GPIO_SD2_Command | GPIO_SD2_Clock);
-
-	/* WiFi Wakeup INT */
-	pmc_disable_wakeup_event(sdio_wakeup_env.gpio_wakeup_num);
-	REG8_VAL(sdio_wakeup_env.gpio_wakeup_reg_gpio_pu) |= 1<<sdio_wakeup_env.gpio_wakeup_bitnum;
-	REG8_VAL(sdio_wakeup_env.gpio_wakeup_reg_gpio_pe) |= 1<<sdio_wakeup_env.gpio_wakeup_bitnum;
-	REG8_VAL(sdio_wakeup_env.gpio_wakeup_reg_gpio_oc) &= ~(1<<sdio_wakeup_env.gpio_wakeup_bitnum);
-	REG8_VAL(sdio_wakeup_env.gpio_wakeup_reg_gpio_en) |= 1<<sdio_wakeup_env.gpio_wakeup_bitnum;
-	/* WiFi Out-band INT */
-	REG8_VAL(sdio_int_env.gpio_int_reg_gpio_pu) |= 1<<sdio_int_env.gpio_int_bitnum;
-	REG8_VAL(sdio_int_env.gpio_int_reg_gpio_pe) |= 1<<sdio_int_env.gpio_int_bitnum;
-	REG8_VAL(sdio_int_env.gpio_int_reg_gpio_oc) &= ~(1<<sdio_int_env.gpio_int_bitnum);
-	REG8_VAL(sdio_int_env.gpio_int_reg_gpio_en) |= 1<<sdio_int_env.gpio_int_bitnum;
-	REG8_VAL(sdio_int_env.gpio_int_reg_gpio_int) |= 0;
-
-	/* Enable SD2 clock */
-	*ATSMB2_BUS_MODE |= ATSMB_CST;			
-	msleep(10);
-
-	SD2_card_state = 1;
-
-	if (on == 1) {
-		mmc_add_host(mmc2_host_attr, true);	
-		while (!mmc2_host_attr->card_scan_status) {
-			msleep(10);
-			i++;
-			if (i>10000) {
-				printk("%s, Scan timeout!!!\n",__func__);
-				break;	
-			}
-		}
-	}
-
-	wmt_wifi_disabled = 0;
-	DBG("[%s] e\n",__func__);
-}
-
-void bcm_wlan_power_off(int off)
-{
-	DBG("[%s] s\n",__func__);
-
-	wmt_wifi_disabled = 1;
-
-	/* Disable SD2 clock */
-	*ATSMB2_BUS_MODE &= ~ATSMB_CST;
-
-	/* Disable SD2 interrupt */
-	*ATSMB2_INT_MASK_1 &= ~ATSMB_SDIO_EN;
-
-	/* WiFi Out-band INT */
-	REG8_VAL(sdio_int_env.gpio_int_reg_gpio_od) &= ~(1<<sdio_int_env.gpio_int_bitnum);
-	REG8_VAL(sdio_int_env.gpio_int_reg_gpio_oc) |= 1<<sdio_int_env.gpio_int_bitnum;
-	REG8_VAL(sdio_int_env.gpio_int_reg_gpio_en) |= 1<<sdio_int_env.gpio_int_bitnum;
-
-
-
-	/* WiFi Wakeup INT */
-	REG8_VAL(sdio_wakeup_env.gpio_wakeup_reg_gpio_od) &= ~(1<<sdio_wakeup_env.gpio_wakeup_bitnum);
-	REG8_VAL(sdio_wakeup_env.gpio_wakeup_reg_gpio_oc) |= 1<<sdio_wakeup_env.gpio_wakeup_bitnum;
-	REG8_VAL(sdio_wakeup_env.gpio_wakeup_reg_gpio_en) |= 1<<sdio_wakeup_env.gpio_wakeup_bitnum;
-	
-	/* SD Bus */
-	GPIO_OD_GP19_SD2_BYTE_VAL &= ~(GPIO_SD2_Data | GPIO_SD2_WriteProtect | GPIO_SD2_Command | GPIO_SD2_Clock);
-	GPIO_OC_GP19_SD2_BYTE_VAL |= (GPIO_SD2_Data | GPIO_SD2_WriteProtect | GPIO_SD2_Command | GPIO_SD2_Clock);
-	GPIO_CTRL_GP19_SD2_BYTE_VAL |= (GPIO_SD2_Data | GPIO_SD2_WriteProtect | GPIO_SD2_Command | GPIO_SD2_Clock);
-
-
-	/* WiFi Power */
-	REG8_VAL(sdio_pwr_env.gpio_pwr_reg_gpio_od) &= ~(1<<sdio_pwr_env.gpio_pwr_bitnum);
-	REG8_VAL(sdio_pwr_env.gpio_pwr_reg_gpio_oc) |= 1<<sdio_pwr_env.gpio_pwr_bitnum;
- 	REG8_VAL(sdio_pwr_env.gpio_pwr_reg_gpio_en) |= 1<<sdio_pwr_env.gpio_pwr_bitnum;		
-
-
-
-	
-	pmc_disable_wakeup_event(sdio_wakeup_env.gpio_wakeup_num);
-	SD2_card_state = 0;
-
-	DBG("[%s] e\n",__func__);
-}
-
-void wmt_set_wifi_irq(int enable)
-{
-	static int depth = 1;
-	DBG("[%s] s\n",__func__);
-	if (enable) {
-		if (depth == 1) {
-			REG8_VAL(sdio_int_env.gpio_int_reg_gpio_ints) = 1<<sdio_int_env.gpio_int_bitnum;
-			REG8_VAL(sdio_int_env.gpio_int_reg_gpio_int) |= 1<<sdio_int_env.gpio_int_bitnum;
-		}
-		depth--;
-	} else {
-		if (!depth) {
-			REG8_VAL(sdio_int_env.gpio_int_reg_gpio_int) &= ~(1<<sdio_int_env.gpio_int_bitnum);
-		}
-		depth++;
-	}
-	DBG("[%s] e\n",__func__);
-}
-
-int wmt_is_wifi_irq(void)
-{
-	DBG("@");
-	if ((REG8_VAL(sdio_int_env.gpio_int_reg_gpio_ints) & (1<<sdio_int_env.gpio_int_bitnum)) && (REG8_VAL(sdio_int_env.gpio_int_reg_gpio_int) & (1<<sdio_int_env.gpio_int_bitnum)))
-		return 1;
-	else
-		return 0;
-}
-	
-EXPORT_SYMBOL_GPL(bcm_wlan_power_on);
-EXPORT_SYMBOL_GPL(bcm_wlan_power_off);
-EXPORT_SYMBOL_GPL(wmt_set_wifi_irq);
-EXPORT_SYMBOL_GPL(wmt_is_wifi_irq);
-EXPORT_SYMBOL_GPL(wmt_wifi_disabled);
-//add AP6330 Drvier End
-
 
 module_init(atsmb2_init);
 module_exit(atsmb2_exit);

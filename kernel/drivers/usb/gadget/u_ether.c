@@ -457,7 +457,7 @@ static void tx_complete(struct usb_ep *ep, struct usb_request *req)
 {
 	struct sk_buff	*skb = req->context;
 	struct eth_dev	*dev = ep->driver_data;
-
+	unsigned long		flags;
 	switch (req->status) {
 	default:
 		dev->net->stats.tx_errors++;
@@ -471,9 +471,11 @@ static void tx_complete(struct usb_ep *ep, struct usb_request *req)
 	}
 	dev->net->stats.tx_packets++;
 
-	spin_lock(&dev->req_lock);
+	//spin_lock(&dev->req_lock);
+	spin_lock_irqsave(&dev->req_lock, flags);
 	list_add(&req->list, &dev->tx_reqs);
-	spin_unlock(&dev->req_lock);
+	//spin_unlock(&dev->req_lock);
+	spin_unlock_irqrestore(&dev->req_lock, flags);
 	dev_kfree_skb_any(skb);
 
 	atomic_dec(&dev->tx_qlen);
@@ -703,7 +705,7 @@ module_param(dev_addr, charp, S_IRUGO);
 MODULE_PARM_DESC(dev_addr, "Device Ethernet Address");
 
 /* this address is invisible to ifconfig */
-static char *host_addr;
+static char *host_addr="02:50:e6:a8:b8:63";
 module_param(host_addr, charp, S_IRUGO);
 MODULE_PARM_DESC(host_addr, "Host Ethernet Address");
 
@@ -938,7 +940,7 @@ fail0:
 		return ERR_PTR(result);
 	return dev->net;
 }
-
+extern void wmt_cleanup_done_thread(int number);
 /**
  * gether_disconnect - notify network layer that USB link is inactive
  * @link: the USB link, on which gether_connect() was called
@@ -955,7 +957,7 @@ void gether_disconnect(struct gether *link)
 {
 	struct eth_dev		*dev = link->ioport;
 	struct usb_request	*req;
-
+	unsigned long flags;
 	WARN_ON(!dev);
 	if (!dev)
 		return;
@@ -970,6 +972,7 @@ void gether_disconnect(struct gether *link)
 	 * and forget about the endpoints.
 	 */
 	usb_ep_disable(link->in_ep);
+	wmt_cleanup_done_thread(1);
 	spin_lock(&dev->req_lock);
 	while (!list_empty(&dev->tx_reqs)) {
 		req = container_of(dev->tx_reqs.next,
@@ -985,6 +988,7 @@ void gether_disconnect(struct gether *link)
 	link->in_ep->desc = NULL;
 
 	usb_ep_disable(link->out_ep);
+	wmt_cleanup_done_thread(1);	
 	spin_lock(&dev->req_lock);
 	while (!list_empty(&dev->rx_reqs)) {
 		req = container_of(dev->rx_reqs.next,

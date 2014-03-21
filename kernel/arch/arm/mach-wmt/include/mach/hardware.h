@@ -161,7 +161,7 @@ typedef struct {
 #define GPIO_FALLING            2
 #define GPIO_RISING             3
 
-#define pcibios_assign_all_busses()     1
+//#define pcibios_assign_all_busses()     1
 /* no used
 #define PCIBIOS_MIN_IO          0x6000
 #define PCIBIOS_MIN_MEM         0x50000000

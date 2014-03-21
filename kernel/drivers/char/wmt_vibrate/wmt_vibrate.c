@@ -39,8 +39,8 @@
 #define WMT_VIBRATE_DEVICE_NAME "wmt_vibrate"
 #define WMT_VIBRATE_MAJOR 37
 //#define WMT_VIBRATE_MINOR 0
-#define WMT_VIBRATE_DELAY 250 //ms
-
+//#define WMT_VIBRATE_DELAY 250 //ms
+static int WMT_VIBRATE_DELAY = 90;
 /*************************Function declare************************************/
 static void enable_timedoutput(struct timed_output_dev *sdev, int timeout);
 static int gettime_timedoutput(struct timed_output_dev *sdev);
@@ -112,6 +112,11 @@ static void enable_timedoutput(struct timed_output_dev *sdev, int timeout)
 	if (l_vibratedev.vibtimeout)
 		schedule_work(&l_vibratedev.work);
 	*/
+	if (0 == timeout)
+	{
+		// Don't vibrate
+		return;
+	}
 	del_timer_sync(&vibrate_timer);
 
 	if (l_vibratedev.active == 0)
@@ -119,6 +124,10 @@ static void enable_timedoutput(struct timed_output_dev *sdev, int timeout)
 	else
 		REG32_VAL(l_vibratedev.odaddr) |= l_vibratedev.bmp; /* high active */
 
+	if (timeout < WMT_VIBRATE_DELAY)
+	{
+		timeout = WMT_VIBRATE_DELAY;
+	}
 	mod_timer(&vibrate_timer,  jiffies +  msecs_to_jiffies(timeout));
 }
 
@@ -139,13 +148,13 @@ void wmt_do_vibrate(void)
 	else
 		REG32_VAL(l_vibratedev.odaddr) |= l_vibratedev.bmp; /* high active */
 	// delay
-	//if (l_vibratedev.vibtimeout < WMT_VIBRATE_DELAY)
-	//{
-	//	vibtime = WMT_VIBRATE_DELAY;
-	//} else
-	//{
+	if (l_vibratedev.vibtimeout < WMT_VIBRATE_DELAY)
+	{
+		vibtime = WMT_VIBRATE_DELAY;
+	} else
+	{
 		vibtime = l_vibratedev.vibtimeout;
-	//}
+	}
 	msleep(vibtime);
 	if (l_vibratedev.active == 0)
 		REG32_VAL(l_vibratedev.odaddr) |= l_vibratedev.bmp;
@@ -296,13 +305,12 @@ static ssize_t set_vibtime(struct device *dev, struct device_attribute *attr,
 }
 
 static DEVICE_ATTR(vibtimeout, 0666, show_devname, NULL);
-
+*/
 
 static void vib_work_handler(struct work_struct *work)
 {
 	wmt_do_vibrate();
 }
-*/
 
 extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
 static int get_vibratorset(void* param)
@@ -315,6 +323,14 @@ static int get_vibratorset(void* param)
 	/* read the paraqm from */
 	memset(buf ,0, sizeof(buf));
 	memset(ubootval, 0, sizeof(ubootval));
+	if (wmt_getsyspara("wmt.vibrate.time", buf, &varlen)) {
+		//printk(KERN_WARNING "wmt.gpo.vibrator isn't set in u-boot env! -> Use default\n");
+		//return -1;
+		WMT_VIBRATE_DELAY = 90;
+	} else {
+		sscanf(buf, "%d", &WMT_VIBRATE_DELAY);
+	}
+	memset(buf ,0, sizeof(buf));
 	if (wmt_getsyspara("wmt.gpo.vibrator", buf, &varlen)) {
 		printk(KERN_WARNING "wmt.gpo.vibrator isn't set in u-boot env! -> Use default\n");
 		return -1;
@@ -351,7 +367,11 @@ static int __init wmt_vibrate_init(void)
 	int error = 0;
 
 	/* get vibrator setting */
-	get_vibratorset(&l_vibratedev);
+	if (get_vibratorset(&l_vibratedev) < 0)
+	{
+		printk(KERN_ERR "Wrong vabrating u-boot parameter!\n");
+		return -EINVAL;
+	}
 
 	vibrate_gpio_init();
 

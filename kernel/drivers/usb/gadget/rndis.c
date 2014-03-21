@@ -1203,3 +1203,7 @@ void rndis_exit(void)
 	}
 #endif
 }
+bool get_rndis_initialized(void)
+{
+	return rndis_initialized;
+}

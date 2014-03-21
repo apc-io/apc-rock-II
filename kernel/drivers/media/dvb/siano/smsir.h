@@ -32,10 +32,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #define IR_DEFAULT_TIMEOUT		100
 
-struct smscore_device_t;
 
 struct ir_t {
-	struct rc_dev *dev;
+	struct rc_dev *rc_dev;
 	char name[40];
 	char phys[32];
 
@@ -44,12 +43,12 @@ struct ir_t {
 
 	u32 timeout;
 	u32 controller;
+	struct device *device;
 };
 
-int sms_ir_init(struct smscore_device_t *coredev);
-void sms_ir_exit(struct smscore_device_t *coredev);
-void sms_ir_event(struct smscore_device_t *coredev,
-			const char *buf, int len);
+int sms_ir_init(struct ir_t *ir, void* coredev, struct device *device);
+void sms_ir_exit(struct ir_t *ir);
+void sms_ir_event(struct ir_t *ir, const char *buf, int len);
 
 #endif /* __SMS_IR_H__ */
 

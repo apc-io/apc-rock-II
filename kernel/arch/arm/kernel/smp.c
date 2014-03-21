@@ -50,6 +50,10 @@
  */
 struct secondary_data secondary_data;
 
+#ifdef CONFIG_OTZONE_ASYNC_NOTIFY_SUPPORT
+static ipi_secure_notify_handler *secure_notify_handler = NULL;
+#endif
+
 enum ipi_msg_type {
 	IPI_TIMER = 2,
 	IPI_RESCHEDULE,
@@ -57,6 +61,9 @@ enum ipi_msg_type {
 	IPI_CALL_FUNC_SINGLE,
 	IPI_CPU_STOP,
 	IPI_CPU_BACKTRACE,
+#ifdef CONFIG_OTZONE_ASYNC_NOTIFY_SUPPORT
+	IPI_SECURE_NOTIFY,
+#endif
 };
 
 static DECLARE_COMPLETION(cpu_running);
@@ -385,6 +392,9 @@ static const char *ipi_types[NR_IPI] = {
 	S(IPI_CALL_FUNC_SINGLE, "Single function call interrupts"),
 	S(IPI_CPU_STOP, "CPU stop interrupts"),
 	S(IPI_CPU_BACKTRACE, "CPU backtrace"),
+#ifdef CONFIG_OTZONE_ASYNC_NOTIFY_SUPPORT
+        S(IPI_SECURE_NOTIFY, "Secure kernel notification"),
+#endif
 };
 
 void show_ipi_list(struct seq_file *p, int prec)
@@ -617,6 +627,13 @@ void handle_IPI(int ipinr, struct pt_regs *regs)
 		ipi_cpu_backtrace(cpu, regs);
 		break;
 
+#ifdef CONFIG_OTZONE_ASYNC_NOTIFY_SUPPORT
+    	case IPI_SECURE_NOTIFY:
+    	        if(secure_notify_handler)
+       	           secure_notify_handler(regs);
+       	 break;
+#endif
+
 	default:
 		printk(KERN_CRIT "CPU%u: Unknown IPI message 0x%x\n",
 		       cpu, ipinr);
@@ -668,3 +685,22 @@ int setup_profiling_timer(unsigned int multiplier)
 {
 	return -EINVAL;
 }
+
+
+#ifdef CONFIG_OTZONE_ASYNC_NOTIFY_SUPPORT
+int register_secure_notify_handler(ipi_secure_notify_handler handler)
+{
+    secure_notify_handler = handler;   
+    return 0;
+}
+
+int unregister_secure_notify_handler(void)
+{
+    secure_notify_handler = NULL;   
+    return 0;
+}
+
+
+EXPORT_SYMBOL(register_secure_notify_handler);
+EXPORT_SYMBOL(unregister_secure_notify_handler);
+#endif

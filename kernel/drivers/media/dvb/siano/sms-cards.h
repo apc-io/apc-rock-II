@@ -22,7 +22,9 @@
 
 #include <linux/usb.h>
 #include "smscoreapi.h"
+#ifdef SMS_RC_SUPPORT_SUBSYS
 #include "smsir.h"
+#endif
 
 #define SMS_BOARD_UNKNOWN 0
 #define SMS1XXX_BOARD_SIANO_STELLAR 1
@@ -37,6 +39,17 @@
 #define SMS1XXX_BOARD_HAUPPAUGE_TIGER_MINICARD_R2 10
 #define SMS1XXX_BOARD_SIANO_NICE	11
 #define SMS1XXX_BOARD_SIANO_VENICE	12
+#define SMS1XXX_BOARD_SIANO_STELLAR_ROM 13
+#define SMS1XXX_BOARD_ZTE_DVB_DATA_CARD	14
+#define SMS1XXX_BOARD_ONDA_MDTV_DATA_CARD 15
+#define SMS1XXX_BOARD_SIANO_MING	16
+#define SMS1XXX_BOARD_SIANO_PELE	17
+#define SMS1XXX_BOARD_SIANO_RIO		18
+#define SMS1XXX_BOARD_SIANO_DENVER_1530	19
+#define SMS1XXX_BOARD_SIANO_DENVER_2160 20
+#define SMS1XXX_BOARD_SIANO_QING	21
+#define SMS1XXX_BOARD_SIANO_ZICO	22
+#define SMS1XXX_BOARD_SIANO_SANTOS	23
 
 struct sms_board_gpio_cfg {
 	int lna_vhf_exist;
@@ -73,17 +86,20 @@ struct sms_board_gpio_cfg {
 
 struct sms_board {
 	enum sms_device_type_st type;
-	char *name, *fw[DEVICE_MODE_MAX];
+	char *name, *fw[SMSHOSTLIB_DEVMD_MAX];
 	struct sms_board_gpio_cfg board_cfg;
 	char *rc_codes;				/* Name of IR codes table */
 
 	/* gpios */
 	int led_power, led_hi, led_lo, lna_ctrl, rf_switch;
+	char intf_num;
+	int default_mode;
+	unsigned int mtu;
+	unsigned int crystal;
+	struct sms_antenna_config_ST* antenna_config;
 };
 
 struct sms_board *sms_get_board(unsigned id);
-
-extern struct smscore_device_t *coredev;
 
 enum SMS_BOARD_EVENTS {
 	BOARD_EVENT_POWER_INIT,
@@ -106,17 +122,15 @@ enum SMS_BOARD_EVENTS {
 	BOARD_EVENT_MULTIPLEX_ERRORS
 };
 
-int sms_board_event(struct smscore_device_t *coredev,
-		enum SMS_BOARD_EVENTS gevent);
-
-int sms_board_setup(struct smscore_device_t *coredev);
+int sms_board_event(void *coredev, enum SMS_BOARD_EVENTS gevent);
+int sms_board_setup(void *coredev);
 
 #define SMS_LED_OFF 0
 #define SMS_LED_LO  1
 #define SMS_LED_HI  2
-int sms_board_led_feedback(struct smscore_device_t *coredev, int led);
-int sms_board_power(struct smscore_device_t *coredev, int onoff);
-int sms_board_lna_control(struct smscore_device_t *coredev, int onoff);
+int sms_board_led_feedback(void *coredev, int led);
+int sms_board_power(void *coredev, int onoff);
+int sms_board_lna_control(void *coredev, int onoff);
 
 extern int sms_board_load_modules(int id);
 

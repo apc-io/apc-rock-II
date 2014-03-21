@@ -274,8 +274,10 @@ config ARCH_WMT
 	select MIGHT_HAVE_CACHE_L2X0
 	select ARM_GIC
 	select HAVE_SMP
+	select ARCH_REQUIRE_GPIOLIB
+	select HAVE_PWM 
 	select HAVE_CLK
-    select COMMON_CLK
+    	select COMMON_CLK
 	select CLKDEV_LOOKUP
 	help
 	  This enables support for systems based on a WonderMedia Technology system.	  

@@ -44,29 +44,9 @@ struct audio_stream_a {
 	int offset;		/* store start position of the last period in the alsa buffer */
 };
 
-struct wmt_soc_vt1603_info {
-    u16 reg_offset;
-    u16 reg_value;
-};
-
-
-/*
- * REVISIT: Preparation for the ASoC v2. Let the number of available links to
- * be same than number of McBSP ports found in OMAP(s) we are compiling for.
- */
 #define NUM_LINKS	1
 
 extern struct snd_soc_dai_driver wmt_i2s_dai;
-extern void wmt_i2s_dac0_ctrl(int HDMI_audio_enable);
 
-/*
- * ioctls for Hardware Dependant Interface
- */
-#define WMT_SOC_IOCTL_HDMI			_IOWR('H', 0x10, int)
-#define WMT_SOC_IOCTL_WFD_START		_IOWR('H', 0x20, int)
-#define WMT_SOC_IOCTL_GET_STRM		_IOWR('H', 0x30, int)
-#define WMT_SOC_IOCTL_WFD_STOP		_IOWR('H', 0x40, int)
-#define WMT_SOC_IOCTL_VT1603_RD		_IOWR('H', 0x50, int)
-#define WMT_SOC_IOCTL_VT1603_WR		_IOWR('H', 0x60, int)
 
 #endif

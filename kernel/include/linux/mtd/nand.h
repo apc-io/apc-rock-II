@@ -519,6 +519,7 @@ struct nand_chip {
 	unsigned int bbt_options;
 
 	int page_shift;
+	int pagecnt_shift;
 	int phys_erase_shift;
 	int bbt_erase_shift;
 	int chip_shift;

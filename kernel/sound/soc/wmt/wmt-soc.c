@@ -36,23 +36,19 @@
 
 #include "wmt-soc.h"
 #include "wmt-pcm.h"
+#include "wmt_hwdep.h"
 #include "../codecs/wmt_vt1602.h"
 #include "../codecs/vt1603.h"
 
-
 extern int wmt_getsyspara(char *varname, unsigned char *varval, int *varlen);
+extern void wmt_set_i2s_share_pin();
 char wmt_codec_name[80];
 char wmt_dai_name[80];
 char wmt_rate[10];
-int WFD_flag = 0;
 
-/*
- * Debug
- */
 #define AUDIO_NAME "WMT_SOC"
 //#define WMT_SOC_DEBUG 1
 //#define WMT_SOC_DEBUG_DETAIL 1
-#define SOC_REG 1
 
 #ifdef WMT_SOC_DEBUG
 #define DPRINTK(format, arg...) \
@@ -75,276 +71,181 @@ int WFD_flag = 0;
 #define warn(format, arg...) \
 	printk(KERN_WARNING AUDIO_NAME ": " format "\n" , ## arg)
 
-#define WMT_I2S_RATES		(SNDRV_PCM_RATE_44100 | \
-				 SNDRV_PCM_RATE_22050 | \
-				 SNDRV_PCM_RATE_11025 | \
-				 SNDRV_PCM_RATE_48000 | \
-				 SNDRV_PCM_RATE_96000 | \
-				 SNDRV_PCM_RATE_88200 | \
-				 SNDRV_PCM_RATE_32000 | \
-				 SNDRV_PCM_RATE_8000 | \
-				 SNDRV_PCM_RATE_16000 | \
-				 SNDRV_PCM_RATE_KNOT)
+#define WMT_I2S_RATES  SNDRV_PCM_RATE_8000_96000
 
 static struct snd_soc_card snd_soc_machine_wmt;
 
-static int wmt_soc_startup(struct snd_pcm_substream *substream)
+static int wmt_soc_primary_startup(struct snd_pcm_substream *substream)
 {
 	DBG_DETAIL();
-	
 	return 0;
 }
 
-static void wmt_soc_shutdown(struct snd_pcm_substream *substream)
+static void wmt_soc_primary_shutdown(struct snd_pcm_substream *substream)
 {
 	DBG_DETAIL();
 }
 
-static int wmt_soc_hw_params(struct snd_pcm_substream *substream,
+static int wmt_soc_primary_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
-	int err = 0;
-
-	DBG_DETAIL();
-	
-	if ((!strcmp(wmt_dai_name, "i2s")) &&
-		((!strcmp(wmt_codec_name, "vt1602")) || (!strcmp(wmt_codec_name, "vt1603")))) {
-		/* Set the codec system clock for DAC and ADC */
-		if (!(params_rate(params) % 11025))
-			err = snd_soc_dai_set_sysclk(codec_dai, 0, 11289600,
-						    SND_SOC_CLOCK_IN);
-		else
-			err = snd_soc_dai_set_sysclk(codec_dai, 0, 12288000,
-						    SND_SOC_CLOCK_IN);
-	}
-
-	return err;
-}
-
-static int wmt_hwdep_open(struct snd_hwdep *hw, struct file *file)
-{
-	/*info("wmt_hwdep_open");*/
-
-	if ((file->f_flags & O_RDWR) && (WFD_flag)) {
-		return -EBUSY;
-	}
-	else if (file->f_flags & O_SYNC) {
-		WFD_flag = 1;
-	}	
-	
-	return 0;
-}
-
-static int wmt_hwdep_release(struct snd_hwdep *hw, struct file *file)
-{
-	/*info("wmt_hwdep_release");*/
-	WFD_flag = 0;
-	return 0;
-}
-
-static int wmt_hwdep_mmap(struct snd_hwdep *hw, struct file *file, struct vm_area_struct *vma)
-{
-	vma->vm_flags |= VM_IO | VM_RESERVED;
-	vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
-			
-	if (remap_pfn_range(vma, vma->vm_start, (vma->vm_pgoff),
-			     vma->vm_end - vma->vm_start, vma->vm_page_prot)) {
-       	err("*E* remap page range failed: vm_pgoff=0x%x ", (unsigned int)vma->vm_pgoff);
-       	return -EAGAIN;    
-    }
-
-    return 0;
-}
-
-static int wmt_hwdep_ioctl(struct snd_hwdep *hw, struct file *file, unsigned int cmd, unsigned long arg)
-{
-	int *value;
-	WFDStrmInfo_t *info;
-	struct wmt_soc_vt1603_info vt1603_info;
+	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
 	int ret = 0;
+
+	DBG_DETAIL();
 	
-	switch (cmd) {
-	case WMT_SOC_IOCTL_HDMI:
-		value = (int __user *)arg;
-		
-		if (*value > 1) {
-			err("Not supported status for HDMI Audio %d", *value);
-			return 0;
-		}	
-		wmt_i2s_dac0_ctrl(*value);
-		return 0;
-		
-	case WMT_SOC_IOCTL_WFD_START:
-		wmt_pcm_wfd_start();
-		return copy_to_user( (void *)arg, (const void __user *) wmt_pcm_wfd_get_buf(), sizeof(unsigned int));
-		
-	case WMT_SOC_IOCTL_GET_STRM:
-		info = (WFDStrmInfo_t *)wmt_pcm_wfd_get_strm((WFDStrmInfo_t *)arg);
-		return __put_user((int)info, (unsigned int __user *) arg);
-
-	case WMT_SOC_IOCTL_WFD_STOP:
-		wmt_pcm_wfd_stop();
-		return 0;
-	case WMT_SOC_IOCTL_VT1603_RD:
-		ret = copy_from_user(&vt1603_info, (void __user *)arg, sizeof(vt1603_info));
-		
-        if (ret == 0) {
-			vt1603_info.reg_value = vt1603_hwdep_ioctl(0, vt1603_info.reg_offset, vt1603_info.reg_value);
-            ret = copy_to_user((void __user *)arg, &vt1603_info, sizeof(vt1603_info));
-        }
-		return ret;
-	case WMT_SOC_IOCTL_VT1603_WR:
-		ret = copy_from_user(&vt1603_info, (void __user *)arg, sizeof(vt1603_info));
-
-		if (ret == 0)
-			vt1603_hwdep_ioctl(1, vt1603_info.reg_offset, vt1603_info.reg_value);
-		return ret;
+	if (strcmp(wmt_codec_name, "hwdac")) {
+		/* Set codec DAI configuration */
+		ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_CBS_CFS |
+				SND_SOC_DAIFMT_I2S |SND_SOC_DAIFMT_NB_NF);
+		if (ret < 0)
+			return ret;
 	}
 	
-	err("Not supported ioctl for WMT-HWDEP");
-	return -ENOIOCTLCMD;
+
+	/* Set cpu DAI configuration for I2S */
+	ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S 
+				|SND_SOC_DAIFMT_MASTER_MASK | SND_SOC_DAIFMT_NB_NF);  
+	if (ret < 0)
+		return ret;
+
+	if ((!strcmp(wmt_codec_name, "vt1602")) || (!strcmp(wmt_codec_name, "vt1603"))) {
+		/* Set the codec system clock for DAC and ADC */
+		if (!(params_rate(params) % 11025)) {
+			ret = snd_soc_dai_set_sysclk(codec_dai, 0, 11289600,
+						    SND_SOC_CLOCK_IN);		    
+		}				    
+		else {
+			ret = snd_soc_dai_set_sysclk(codec_dai, 0, 12288000,
+						    SND_SOC_CLOCK_IN);				    
+	  }					    
+	}
+
+	return ret;
 }
 
-static void wmt_soc_hwdep_new(struct snd_soc_codec *codec)
+static int wmt_soc_second_startup(struct snd_pcm_substream *substream)
 {
-	struct snd_hwdep *hwdep;
-	
 	DBG_DETAIL();
+	return 0;
+}
 
-	if (snd_hwdep_new(codec->card->snd_card, "WMT-HWDEP", 0, &hwdep) < 0) {
-		err("create WMT-HWDEP fail");
-		return;
-	}
+static void wmt_soc_second_shutdown(struct snd_pcm_substream *substream)
+{
+	DBG_DETAIL();
+}
 
-	sprintf(hwdep->name, "WMT-HWDEP %d", 0);
-
-	info("create %s success", hwdep->name);
-	
-	hwdep->iface = SNDRV_HWDEP_IFACE_WMT;
-	hwdep->ops.open = wmt_hwdep_open;
-	hwdep->ops.ioctl = wmt_hwdep_ioctl;
-	hwdep->ops.release = wmt_hwdep_release;
-	hwdep->ops.mmap = wmt_hwdep_mmap;
-
-	return;
+static int wmt_soc_second_hw_params(struct snd_pcm_substream *substream,
+	struct snd_pcm_hw_params *params)
+{
+	DBG_DETAIL();
+	return 0;
 }
 
 static int wmt_soc_dai_init(struct snd_soc_pcm_runtime *rtd)
 {
 	DBG_DETAIL();
-
 	wmt_soc_hwdep_new(rtd->codec);
-
 	return 0;
+}
+
+static int wmt_suspend_pre(struct snd_soc_card *card)
+{
+	snd_soc_dapm_disable_pin(&card->rtd->codec->dapm, "Left HP");
+	snd_soc_dapm_disable_pin(&card->rtd->codec->dapm, "Right HP");
+	snd_soc_dapm_disable_pin(&card->rtd->codec->dapm, "Left SPK");
+	snd_soc_dapm_disable_pin(&card->rtd->codec->dapm, "Right SPK");
 }
 
 static int wmt_suspend_post(struct snd_soc_card *card)
 {
 	DBG_DETAIL();
 
-	if (!strcmp(wmt_dai_name, "i2s")) {
-		/* Disable BIT4:ARFP clock, BIT3:ARF clock */
-		PMCEU_VAL &= ~(BIT4 | BIT3);
-	}
+	/* Disable BIT15:I2S clock, BIT4:ARFP clock, BIT3:ARF clock */
+	PMCEU_VAL &= ~(BIT15 | BIT4 | BIT3);
 
+	snd_soc_dapm_enable_pin(&card->rtd->codec->dapm, "Left HP");
+	snd_soc_dapm_enable_pin(&card->rtd->codec->dapm, "Right HP");
+	snd_soc_dapm_enable_pin(&card->rtd->codec->dapm, "Left SPK");
+	snd_soc_dapm_enable_pin(&card->rtd->codec->dapm, "Right SPK");
+	
 	return 0;
 }
 
 static int wmt_resume_pre(struct snd_soc_card *card)
 {
-	//unsigned int clock = 0;
+	/* Enable MCLK before VT1602 codec enable, otherwise the codec will be disabled. */
 	
-	DBG_DETAIL();
-	
-	if (!strcmp(wmt_dai_name, "i2s")) {
-		/*
-		 *  Enable MCLK before VT1602 codec enable,
-		 *  otherwise the codec will be disabled.
-		 */
-		/* set to 22.579MHzMHz */
-		auto_pll_divisor(DEV_I2S, CLK_ENABLE , 0, 0);
-		auto_pll_divisor(DEV_I2S, SET_PLLDIV, 1, 22579);
-		/*clock = auto_pll_divisor(DEV_I2S, GET_FREQ , 0, 0);
-		info("%s : clock=%d \n" , __func__, clock);*/
+	/* set to 24.576MHz */
+	auto_pll_divisor(DEV_I2S, CLK_ENABLE , 0, 0);
+	auto_pll_divisor(DEV_I2S, SET_PLLDIV, 1, 24576);
+	/* Enable BIT4:ARFP clock, BIT3:ARF clock */
+	PMCEU_VAL |= (BIT4 | BIT3);
+	/* Enable BIT2:AUD clock */
+	PMCE3_VAL |= BIT2;
 
-		/* Enable BIT4:ARFP clock, BIT3:ARF clock */
-		PMCEU_VAL |= (BIT4 | BIT3);
-
-		/* Enable BIT2:AUD clock */
-		PMCE3_VAL |= BIT2;
-
-		/* disable GPIO and enable Pull Down mode */
-		GPIO_CTRL_GP10_I2S_BYTE_VAL &= ~0xFF;
-		GPIO_CTRL_GP11_I2S_BYTE_VAL &= ~(BIT0 | BIT1 | BIT2);
-
-		PULL_EN_GP10_I2S_BYTE_VAL |= 0xFF;
-		PULL_EN_GP11_I2S_BYTE_VAL |= (BIT0 | BIT1 | BIT2);
-
-		/* set to 2ch input, 2ch output */
-		PIN_SHARING_SEL_4BYTE_VAL &= ~(BIT15 | BIT17 | BIT19 | BIT20);
-		PIN_SHARING_SEL_4BYTE_VAL |= (BIT1 | BIT16 | BIT18);
-	}
-
+	wmt_set_i2s_share_pin();
 	return 0;
 }
 
-static struct snd_soc_ops wmt_soc_ops = {
-	.startup = wmt_soc_startup,
-	.hw_params = wmt_soc_hw_params,
-	.shutdown = wmt_soc_shutdown,
+static struct snd_soc_ops wmt_soc_primary_ops = {
+	.startup = wmt_soc_primary_startup,
+	.hw_params = wmt_soc_primary_hw_params,
+	.shutdown = wmt_soc_primary_shutdown,
+};
+
+static struct snd_soc_ops wmt_soc_second_ops = {
+	.startup = wmt_soc_second_startup,
+	.hw_params = wmt_soc_second_hw_params,
+	.shutdown = wmt_soc_second_shutdown,
 };
 
 /* Digital audio interface glue - connects codec <--> CPU */
-static struct snd_soc_dai_link wmt_dai = {
-	.name = "WMT_SOC_AUDIO",
-	.stream_name = "WMT_SOC_AUDIO",
-	.platform_name = "wmt-audio-pcm.0",
-	.init = wmt_soc_dai_init,
-	.ops = &wmt_soc_ops,
+static struct snd_soc_dai_link wmt_dai[] = {
+	{
+		.name = "HiFi",
+		.stream_name = "HiFi",
+		.platform_name = "wmt-audio-pcm.0",
+		.init = wmt_soc_dai_init,
+		.ops = &wmt_soc_primary_ops,
+	},
+	{
+		.name = "Voice",
+		.stream_name = "Voice",
+		.platform_name = "wmt-pcm-dma.0",
+		.cpu_dai_name = "wmt-pcm-controller.0",
+		.codec_dai_name = "HWDAC",
+		.codec_name = "wmt-i2s-hwdac.0",
+		.ops = &wmt_soc_second_ops,
+	},
 };
 
 /* Audio machine driver */
 static struct snd_soc_card snd_soc_machine_wmt = {
-	.name = "WMT_SOC",
-	.dai_link = &wmt_dai,
-	.num_links = 1,
+	.name = "WMT_VT1609",
+	.dai_link = wmt_dai,
+	.num_links = ARRAY_SIZE(wmt_dai),
+	.suspend_pre = wmt_suspend_pre,
 	.suspend_post = wmt_suspend_post,
 	.resume_pre = wmt_resume_pre,
 };
 
-#ifdef SOC_REG
 static struct platform_device *wmt_snd_device;
 
 static int __init wmt_soc_init(void)
-#else
-static int __devinit wmt_soc_probe(struct platform_device *pdev)
-#endif
 {
-	int err;
-	char buf[80];
-	char varname[80];
-	int varlen = 80;
-	int i = 0;
-	unsigned int wmt_i2s_rate = 0;
-	unsigned int bustype = 0;
-#ifndef SOC_REG	
-	struct snd_soc_card *card = &snd_soc_machine_wmt;
-#endif
-
-	DBG_DETAIL();
-
-	/* Read u-boot parameter to decide wmt_dai_name and wmt_codec_name */
-	strcpy(varname, "wmt.audio.i2s");
-	if (wmt_getsyspara(varname, buf, &varlen) != 0) {
+	int ret, i;
+	char buf[64];
+	int len = ARRAY_SIZE(buf);
+	
+	if (wmt_getsyspara("wmt.audio.i2s", buf, &len) != 0) {
 		strcpy(wmt_dai_name, "null");	
 		strcpy(wmt_codec_name, "null");
 	}
 	else {
 		strcpy(wmt_dai_name, "i2s");
-		sscanf(buf, "vt1603:%x", &bustype);
-		//info("*** bustype=%x ***", bustype);
 	}
 
 	if (strcmp(wmt_dai_name, "null")) {
@@ -356,202 +257,62 @@ static int __devinit wmt_soc_probe(struct platform_device *pdev)
 		}
 	}
 	else {
-#ifdef CONFIG_SND_WMT_SOC_I2S
-		strcpy(wmt_dai_name, "i2s");	
-#endif
-#ifdef CONFIG_I2S_HW_DAC
-		strcpy(wmt_codec_name, "hwdac");
-#endif
-#ifdef CONFIG_I2S_CODEC_VT1602
-		strcpy(wmt_codec_name, "vt1602");
-#endif
-#ifdef CONFIG_I2S_CODEC_VT1603
-		strcpy(wmt_codec_name, "vt1603");
-#endif
-#ifdef CONFIG_I2S_CODEC_WM8900
-		strcpy(wmt_codec_name, "wm8900");
-#endif
+		return -EINVAL;
 	}
+
+	// is wm8994, return and load wmt_wm8994 module
+	if (strcmp(wmt_codec_name, "wm8994") == 0)
+		return -ENODEV;
 
 	info("dai_name=%s, codec_name=%s", wmt_dai_name, wmt_codec_name);
-
-	/* Read u-boot parameter to decide which sample rate we're supported */
-	memset(buf, 0, sizeof(buf));
-	strcpy(varname, "wmt.audio.rate");
-	if (wmt_getsyspara(varname, buf, &varlen) != 0) {
-		strcpy(wmt_rate, "single");	
-	}
-	else {
-		for (i = 0; i < 10; ++i) {
-			if (buf[i] == ':')
-				break;
-			else
-				wmt_rate[i] = buf[i];
-		}
-	}
-
-	if ((strcmp(wmt_rate, "all")) && (strcmp(wmt_rate, "single"))) {
-		info("wmt.audio.rate should be all or single, set to single and 44.1K as default");
-		strcpy(wmt_rate, "single");
-	}
-
-	if (!strcmp(wmt_rate, "single")) {
-		sscanf(buf, "single:%d", &wmt_i2s_rate);
-
-		if ((!wmt_i2s_rate) || ((wmt_i2s_rate != 48000) && (wmt_i2s_rate != 44100))) {
-			info("Wrong format for wmt.audio.rate, set to 44.1K");
-			wmt_i2s_rate = 44100;
-		}
-		
-		info("%s, wmt_i2s_rate=%d", wmt_rate, wmt_i2s_rate);
-
-		if (wmt_i2s_rate == 48000)
-			wmt_i2s_rate = SNDRV_PCM_RATE_48000;
-		else
-			wmt_i2s_rate = SNDRV_PCM_RATE_44100;
-	}
 	
-	/* Plug-in dai and codec function depend on wmt_dai_name and wmt_codec_name */
-	i = 0;
-	if (!strcmp(wmt_dai_name, "i2s")) {
-#ifdef CONFIG_SND_WMT_SOC_I2S
-		if (!strcmp(wmt_rate, "all")) {
-			wmt_i2s_dai.playback.rates = WMT_I2S_RATES;
-			wmt_i2s_dai.capture.rates = WMT_I2S_RATES;
-		}
-		else {
-			wmt_i2s_dai.playback.rates = wmt_i2s_rate;
-			wmt_i2s_dai.capture.rates = wmt_i2s_rate;
-		}
-		
-		wmt_dai.cpu_dai_name = "wmt-i2s.0";
-		i++;
-#endif
-	}
-	
-	if (!i) {
-		strcpy(wmt_dai_name, "null");	
-	}
 
-	i = 0;
+	wmt_i2s_dai.playback.rates = (SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_8000);
+	wmt_i2s_dai.capture.rates = (SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_8000);
+	wmt_dai[0].cpu_dai_name = "wmt-i2s.0";
 
-	if (!strcmp(wmt_codec_name, "vt1602")) {
-#ifdef CONFIG_I2S_CODEC_VT1602		
-		wmt_dai.codec_dai_name = "VT1602";
-		wmt_dai.codec_name = "vt1602.1-001a";
-		i++;
-#endif		
+	if (!strcmp(wmt_codec_name, "vt1602")) {		
+		wmt_dai[0].codec_dai_name = "VT1602";
+		wmt_dai[0].codec_name = "vt1602.1-001a";
 	}
-	else if (!strcmp(wmt_codec_name, "wm8900")) {
-#ifdef CONFIG_I2S_CODEC_WM8900
-		i++;
-#endif		
-	}	
 	else if (!strcmp(wmt_codec_name, "hwdac")) {
-#ifdef CONFIG_I2S_HW_DAC
-		wmt_dai.codec_dai_name = "HWDAC";
-		wmt_dai.codec_name = "wmt-i2s-hwdac.0";
-		i++;
-#endif		
+		wmt_dai[0].codec_dai_name = "HWDAC";
+		wmt_dai[0].codec_name = "wmt-i2s-hwdac.0";
 	}
 	else if (!strcmp(wmt_codec_name, "vt1603")) {
-#ifdef CONFIG_I2S_CODEC_VT1603
-		wmt_dai.codec_dai_name = "VT1603";
-
-		if (bustype == 0xf0) {
-			wmt_dai.codec_name = "vt1603.0-001a";
-		} 
-		else if (bustype == 0xf1) {
-			wmt_dai.codec_name = "vt1603.1-001a";
-		}
-		else if (bustype == 0xf2) {
-			wmt_dai.codec_name = "spi0.0";
-		}
-		else if (bustype == 0xf3) {
-			wmt_dai.codec_name = "vt1603.2-001a";
-		}
-		else {
-			info("invalid bus type. set to SPI Bus0");
-			wmt_dai.codec_name = "spi0.0";
-		}
-
-		i++;
-#endif
-	}
-	
-	if (!i) {
-		strcpy(wmt_codec_name, "null");
+		wmt_dai[0].codec_dai_name = "VT1603";
+		wmt_dai[0].codec_name = "vt1603-codec";
 	}
 
-	if ((!strcmp(wmt_dai_name, "null")) || (!strcmp(wmt_codec_name, "null"))) {
-		info("dai or codec name not matched!");
-		return 0;
-	}
-
-	/* Doing register process */
-#ifdef SOC_REG
+	/* Doing register process after plug-in */
 	wmt_snd_device = platform_device_alloc("soc-audio", -1);
 	if (!wmt_snd_device)
 		return -ENOMEM;
-	
+
 	platform_set_drvdata(wmt_snd_device, &snd_soc_machine_wmt);
 	
-	err = platform_device_add(wmt_snd_device);
-	if (err)
+	ret = platform_device_add(wmt_snd_device);
+	if (ret)
 		goto err1;
-	
+
 	return 0;
 	
 err1:
 	platform_device_put(wmt_snd_device);
+	return ret;
 
-#else
-	card->dev = &pdev->dev;
-	
-	err = snd_soc_register_card(card);
-	if (err)
-		dev_err(&pdev->dev, "snd_soc_register_card() failed: %d\n",
-			err);
-#endif
-
-	return err;
 }
 
-#ifdef SOC_REG
 static void __exit wmt_soc_exit(void)
 {
 	DBG_DETAIL();
+	
 	platform_device_unregister(wmt_snd_device);
 }
 
 module_init(wmt_soc_init);
 module_exit(wmt_soc_exit);
 
-#else
-
-static int __devexit wmt_soc_remove(struct platform_device *pdev)	
-{
-	struct snd_soc_card *card = platform_get_drvdata(pdev);
-
-	DBG_DETAIL();
-
-	snd_soc_unregister_card(card);
-	return 0;
-}
-
-static struct platform_driver wmt_driver = {
-	.driver		= {
-		.name	= "soc-audio",
-		.owner	= THIS_MODULE,
-	},
-	.probe		= wmt_soc_probe,
-	.remove		= __devexit_p(wmt_soc_remove),
-};
-
-module_platform_driver(wmt_driver);
-#endif
-
 MODULE_AUTHOR("WonderMedia Technologies, Inc.");
-MODULE_DESCRIPTION("WMT [ALSA SoC] driver");
+MODULE_DESCRIPTION("WMT [ALSA SoC/Machine] driver");
 MODULE_LICENSE("GPL");
-

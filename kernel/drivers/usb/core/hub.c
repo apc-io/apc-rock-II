@@ -1685,7 +1685,7 @@ void usb_disconnect(struct usb_device **pdev)
 
 	int	wmt_usb_patch = 0;
 	
-	if ((udev->portnum == 1) && (udev->speed == 3))
+	if ((udev->portnum == 1) && (udev->speed == 3) && (!udev->parent))
 		wmt_usb_patch = 1;
 		
 	
@@ -1998,7 +1998,7 @@ int usb_new_device(struct usb_device *udev)
 	(void) usb_create_ep_devs(&udev->dev, &udev->ep0, udev);
 	usb_mark_last_busy(udev);
 	pm_runtime_put_sync_autosuspend(&udev->dev);
-	if ((udev->portnum == 1) && (udev->speed == 3))
+	if ((udev->portnum == 1) && (udev->speed == 3) && (!udev->parent))
 		*(unsigned char *)0xfe11010e = ((*(unsigned char *)0xfe11010e & (~0x3)) | 0x1);
 	return err;
 

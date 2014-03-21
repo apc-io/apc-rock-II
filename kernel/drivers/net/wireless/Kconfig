@@ -276,7 +276,8 @@ config WIFI_CONTROL_FUNC
 source "drivers/net/wireless/ath/Kconfig"
 source "drivers/net/wireless/b43/Kconfig"
 source "drivers/net/wireless/b43legacy/Kconfig"
-source "drivers/net/wireless/bcmdhd/Kconfig"
+#source "drivers/net/wireless/bcmdhd/Kconfig"
+source "drivers/net/wireless/bcmdhd.1.28.23.x.cn/Kconfig"
 source "drivers/net/wireless/brcm80211/Kconfig"
 source "drivers/net/wireless/hostap/Kconfig"
 source "drivers/net/wireless/ipw2x00/Kconfig"
@@ -292,5 +293,11 @@ source "drivers/net/wireless/wl1251/Kconfig"
 source "drivers/net/wireless/wl12xx/Kconfig"
 source "drivers/net/wireless/zd1211rw/Kconfig"
 source "drivers/net/wireless/mwifiex/Kconfig"
+
+# ===========================================
+# NMC1XXX WiFi
+# ===========================================
+source "drivers/net/wireless/bcmdhd.1.28.23.x.cn_ap6330/Kconfig"
+source "drivers/net/wireless/rtl8189ES_linux_v4.1.8/Kconfig"
 
 endif # WLAN

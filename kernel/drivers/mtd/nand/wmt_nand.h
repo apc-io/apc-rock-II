@@ -313,7 +313,7 @@ struct NFC_RW_T {
 #define DMA_INC8 0x20
 /*#define first4k218 0
 #define second4k218 4314 *//* 4096 + 218 */
-#define NFC_TIMEOUT_TIME (HZ*2)
+#define NFC_TIMEOUT_TIME (HZ*8)
 
 int nand_init_pdma(struct mtd_info *mtd);
 int nand_free_pdma(struct mtd_info *mtd);

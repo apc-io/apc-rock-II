@@ -22,13 +22,13 @@
 --*/
 
 
-#ifndef __OMAP_PCM_H__
-#define __OMAP_PCM_H__
+#ifndef __WMT_PCM_H__
+#define __WMT_PCM_H__
 
 struct wmt_pcm_dma_data {
-	char		*name;		/* stream identifier */
-	int		dma_req;	/* DMA request line */
-	unsigned long	port_addr;	/* transmit/receive register */
+	char          *name;     /* stream identifier */
+	int           dma_req;   /* DMA request line */
+	unsigned long port_addr; /* transmit/receive register */
 	struct dma_device_cfg_s *dma_cfg;
 };
 

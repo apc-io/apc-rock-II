@@ -484,12 +484,15 @@ void vpp_get_sys_parameter(void)
 		vpp_parse_param(buf, (unsigned int *)parm, 1, 0);
 		g_vpp.hdmi_sp_mode = (parm[0]) ? 1 : 0;
 	}
+
+	if (wmt_getsyspara("wmt.hdmi.disable", buf, &varlen) == 0)
+		g_vpp.hdmi_disable = 1;
 #else
 	if (env_read_para("wmt.display.hdmi", &param) == 0) {
 		g_vpp.hdmi_sp_mode = strtoul(param.value, 0, 16);
 		free(param.value);
 	}
-#endif	
+#endif
 } /* End of vpp_get_sys_parameter */
 
 void vpp_init(void)
@@ -497,6 +500,7 @@ void vpp_init(void)
 	vpp_mod_base_t *mod_p;
 	unsigned int mod_mask;
 	int i;
+	int no;
 
 	vpp_get_sys_parameter();
 
@@ -568,16 +572,42 @@ void vpp_init(void)
 #endif
 
 #ifdef CONFIG_KERNEL
+	no = (g_vpp.virtual_display_mode == 1) ? 1 : 0;
+	if (g_vpp.govrh_preinit) {
+		struct fb_videomode vmode;
+		vout_info_t *info;
+		govrh_mod_t *govr;
+
+		info = vout_get_info_entry(no);
+		govr = vout_info_get_govr(no);
+		govrh_get_videomode(govr, &vmode);
+		govrh_get_framebuffer(govr, &info->fb);
+		g_vpp.govrh_init_yres = vmode.yres;
+		if ((info->resx != vmode.xres) || (info->resy != vmode.yres)) {
+			g_vpp.govrh_preinit = 0;
+			DPRINT("preinit not match (%dx%d) --> (%dx%d)\n",
+				vmode.xres, vmode.yres, info->resx, info->resy);
+			if (g_vpp.virtual_display || (g_vpp.dual_display == 0)) {
+				if(!hdmi_get_plugin()) {
+					vout_t *vo = vout_get_entry(VPP_VOUT_NUM_DVI);
+					if(vo->dev && !strcmp(vo->dev->name, "CS8556") && vo->dev->init) {
+						vo->dev->init(vo);
+					}
+				}
+			}
+		}
+	}
+
 	if (!g_vpp.govrh_preinit) {
 		struct fb_videomode vmode;
 		vout_info_t *info;
 
-		info = vout_get_info_entry(0);
+		info = vout_get_info_entry(no);
 		memset(&vmode, 0, sizeof(struct fb_videomode));
 		vmode.xres = info->resx;
 		vmode.yres = info->resy;
 		vmode.refresh = info->fps;
-		if (vout_find_match_mode(0, &vmode, 1) == 0)
+		if (vout_find_match_mode(no, &vmode, 1) == 0)
 			vout_config(VPP_VOUT_ALL, info, &vmode);
 	}
 #endif
@@ -710,6 +740,9 @@ void vpp_set_mutex(int idx, int lock)
 
 void vpp_free_framebuffer(void)
 {
+	if (g_vpp.mb[0] == 0)
+		return;
+	MSG("mb free 0x%x\n", g_vpp.mb[0]);
 	mb_free(g_vpp.mb[0]);
 	vpp_lock();
 	g_vpp.mb[0] = 0;
@@ -726,7 +759,6 @@ int vpp_alloc_framebuffer(unsigned int resx, unsigned int resy)
 
 #ifdef CONFIG_VPP_DYNAMIC_ALLOC
 	if (g_vpp.mb[0]) {
-		MSG("mb free 0x%x\n", g_vpp.mb[0]);
 		vpp_free_framebuffer();
 	}
 #endif
@@ -888,7 +920,7 @@ int vpp_mb_get(unsigned int phy)
 		return -1;
 	}
 #endif
-
+	g_vpp.stream_mb_sync_flag = 1;
 	for (i = 0, cnt = 0; i < g_vpp.stream_mb_cnt; i++) {
 		if (g_vpp.stream_mb_lock & (0x1 << i))
 			cnt++;
@@ -911,7 +943,6 @@ int vpp_mb_get(unsigned int phy)
 		return -1;
 	}
 	g_vpp.stream_mb_lock |= mask;
-	g_vpp.stream_mb_sync_flag = 1;
 	if (vpp_check_dbg_level(VPP_DBGLVL_STREAM)) {
 		char buf[50];
 
@@ -1214,13 +1245,19 @@ struct vpp_netlink_proc_t {
 	rwlock_t lock;
 };
 
-static struct switch_dev vpp_sdev = {
+struct switch_dev vpp_sdev = {
 	.name = "hdmi",
 };
 
 static struct switch_dev vpp_sdev_hdcp = {
 	.name = "hdcp",
 };
+
+#if 0
+static struct switch_dev vpp_sdev_audio = {
+	.name = "hdmi_audio",
+};
+#endif
 
 struct vpp_netlink_proc_t vpp_netlink_proc[VPP_NETLINK_PROC_MAX];
 static struct sock *vpp_nlfd;
@@ -1264,20 +1301,254 @@ void vpp_netlink_init(void)
 {
 	vpp_netlink_proc[0].pid = 0;
 	vpp_netlink_proc[1].pid = 0;
+	rwlock_init(&(vpp_netlink_proc[0].lock));
+	rwlock_init(&(vpp_netlink_proc[1].lock));
 	vpp_nlfd = netlink_kernel_create(&init_net, NETLINK_CEC_TEST, 0,
 		vpp_netlink_receive, NULL, THIS_MODULE);
 	if (!vpp_nlfd)
 		DPRINT(KERN_ERR "can not create a netlink socket\n");
 }
 
+static ssize_t attr_show_parsed_edid(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	ssize_t len = 0;
+	int i, j;
+	unsigned char audio_format, sample_freq, bitrate;
+	int sample_freq_num, bitrate_num;
+
+#ifdef DEBUG
+	DPRINT("------- EDID Parsed ------\n");
+	if(strlen(edid_parsed.tv_name.vendor_name) != 0)
+		DPRINT("Vendor Name: %s\n", edid_parsed.tv_name.vendor_name);
+
+	if(strlen(edid_parsed.tv_name.monitor_name) != 0)
+		DPRINT("Monitor Name: %s\n", edid_parsed.tv_name.monitor_name);
+
+	for(i = 0; i < AUD_SAD_NUM; i++) {
+		if(edid_parsed.sad[i].flag == 0) {
+			if(i == 0)
+				printk("No SAD Data\n");
+			break;
+		}
+		DPRINT("SAD %d: 0x%02X 0x%02X 0x%02X\n", i,
+			edid_parsed.sad[i].sad_byte[0], edid_parsed.sad[i].sad_byte[1],
+			edid_parsed.sad[i].sad_byte[2]);
+	}
+	DPRINT("--------------------------\n");
+#endif
+	/* print Vendor Name */
+	if(strlen(edid_parsed.tv_name.vendor_name) != 0) {
+		len += sprintf(buf + len, "%-16s", "Vendor Name");
+		len += sprintf(buf + len, ": %s\n", edid_parsed.tv_name.vendor_name);
+	}
+
+	/* print Monitor Name */
+	if(strlen(edid_parsed.tv_name.monitor_name) != 0) {
+		len += sprintf(buf + len, "%-16s", "Monitor Name");
+		len += sprintf(buf + len, ": %s\n", edid_parsed.tv_name.monitor_name);
+	}
+
+	for(i = 0; i < AUD_SAD_NUM; i++) {
+		if(edid_parsed.sad[i].flag == 0)
+			break;
+		/*
+		SAD Byte 1 (format and number of channels):
+		   bit 7: Reserved (0)
+		   bit 6..3: Audio format code
+		     1 = Linear Pulse Code Modulation (LPCM)
+		     2 = AC-3
+		     3 = MPEG1 (Layers 1 and 2)
+		     4 = MP3
+		     5 = MPEG2
+		     6 = AAC
+		     7 = DTS
+		     8 = ATRAC
+		     0, 15: Reserved
+		     9 = One-bit audio aka SACD
+		    10 = DD+
+		    11 = DTS-HD
+		    12 = MLP/Dolby TrueHD
+		    13 = DST Audio
+		    14 = Microsoft WMA Pro
+		   bit 2..0: number of channels minus 1  (i.e. 000 = 1 channel; 001 = 2 channels; 111 =
+			     8 channels)
+		*/
+		audio_format = (edid_parsed.sad[i].sad_byte[0] & 0x78) >> 3;
+		if(audio_format == 0 || audio_format == 15)
+			continue;
+
+		/* print header */
+		len += sprintf(buf + len, "%-16s", "Audio Format");
+		len += sprintf(buf + len, ": ");
+
+		switch(audio_format) {
+			case 1:
+				len += sprintf(buf + len, "pcm");
+			break;
+			case 2:
+				len += sprintf(buf + len, "ac3");
+			break;
+			case 3:
+				len += sprintf(buf + len, "mpeg1");
+			break;
+			case 4:
+				len += sprintf(buf + len, "mp3");
+			break;
+			case 5:
+				len += sprintf(buf + len, "mpeg2");
+			break;
+			case 6:
+				len += sprintf(buf + len, "aac");
+			break;
+			case 7:
+				len += sprintf(buf + len, "dts");
+			break;
+			case 8:
+				len += sprintf(buf + len, "atrac");
+			break;
+			case 9:
+				len += sprintf(buf + len, "one_bit_audio");
+			break;
+			case 10:
+				len += sprintf(buf + len, "eac3");
+			break;
+			case 11:
+				len += sprintf(buf + len, "dts-hd");
+			break;
+			case 12:
+				len += sprintf(buf + len, "mlp");
+			break;
+			case 13:
+				len += sprintf(buf + len, "dst");
+			break;
+			case 14:
+				len += sprintf(buf + len, "wmapro");
+			break;
+			default:
+			break;
+		}
+
+		/* separator */
+		len += sprintf(buf + len, ",");
+
+		/* number of channels */
+		len += sprintf(buf + len, "%d", (edid_parsed.sad[i].sad_byte[0] & 0x7) + 1);
+
+		/* separator */
+		len += sprintf(buf + len, ",");
+
+		/*
+		SAD Byte 2 (sampling frequencies supported):
+		   bit 7: Reserved (0)
+		   bit 6: 192kHz
+		   bit 5: 176kHz
+		   bit 4: 96kHz
+		   bit 3: 88kHz
+		   bit 2: 48kHz
+		   bit 1: 44kHz
+		   bit 0: 32kHz
+		*/
+		sample_freq = edid_parsed.sad[i].sad_byte[1];
+		sample_freq_num = 0;
+		for(j = 0; j < 7; j++) {
+			if(sample_freq & (1 << j)) {
+				if(sample_freq_num != 0)
+					len += sprintf(buf + len, "|"); /* separator */
+				switch(j) {
+					case 0:
+						len += sprintf(buf + len, "32KHz");
+					break;
+					case 1:
+						len += sprintf(buf + len, "44KHz");
+					break;
+					case 2:
+						len += sprintf(buf + len, "48KHz");
+					break;
+					case 3:
+						len += sprintf(buf + len, "88KHz");
+					break;
+					case 4:
+						len += sprintf(buf + len, "96KHz");
+					break;
+					case 5:
+						len += sprintf(buf + len, "176KHz");
+					break;
+					case 6:
+						len += sprintf(buf + len, "192KHz");
+					break;
+					default:
+					break;
+				}
+				sample_freq_num++;
+			}
+		}
+
+		if(sample_freq_num == 0)
+			len += sprintf(buf +len, "0");
+
+		/* separator */
+		len += sprintf(buf + len, ",");
+
+		/*
+		SAD Byte 3 (bitrate):
+	 	 For LPCM, bits 7:3 are reserved and the remaining bits define bit depth
+	   	bit 2: 24 bit
+	  	bit 1: 20 bit
+	   	bit 0: 16 bit
+		For all other sound formats, bits 7..0 designate the maximum supported bitrate divided by
+		8 kbit/s.
+		*/
+		bitrate = edid_parsed.sad[i].sad_byte[2];
+		bitrate_num = 0;
+		if(audio_format == 1) { /* for LPCM */
+			for(j = 0; j < 3; j++) {
+				if(bitrate & (1 << j)) {
+					if(bitrate_num != 0)
+						len += sprintf(buf + len, "|"); /* separator */
+					switch(j) {
+						case 0:
+							len += sprintf(buf + len, "16bit");
+						break;
+						case 1:
+							len += sprintf(buf + len, "20bit");
+						break;
+						case 2:
+							len += sprintf(buf + len, "24bit");
+						break;
+						default:
+						break;
+					}
+					bitrate_num++;
+				}
+			}
+		} else if(audio_format >= 2 && audio_format <= 8) /* From AC3 to ATRAC */
+			len += sprintf(buf + len, "%dkbps", bitrate * 8);
+		else /* From One-bit-audio to WMA Pro*/
+			len += sprintf(buf + len, "%d", bitrate);
+
+		len += sprintf(buf + len, "\n");
+	}
+
+	if(len == 0)
+		len += sprintf(buf + len, "\n");
+
+	return len;
+}
+
+static DEVICE_ATTR(edid_parsed, 0444, attr_show_parsed_edid, NULL);
+
 void vpp_switch_state_init(void)
 {
 	/* /sys/class/switch/hdmi/state */
 	switch_dev_register(&vpp_sdev);
-	switch_set_state(&vpp_sdev, (hdmi_get_plugin() &&
-		!g_vpp.virtual_display) ? 1 : 0);
+	switch_set_state(&vpp_sdev, hdmi_get_plugin() ? 1 : 0);
 	switch_dev_register(&vpp_sdev_hdcp);
 	switch_set_state(&vpp_sdev_hdcp, 0);
+#if 0
+	switch_dev_register(&vpp_sdev_audio);
+#endif
+	device_create_file(vpp_sdev.dev, &dev_attr_edid_parsed);
 }
 
 void vpp_netlink_notify(int no, int cmd, int arg)
@@ -1382,12 +1653,16 @@ void vpp_netlink_notify_plug(int vo_num, int plugin)
 	if ((vpp_netlink_proc[0].pid == 0) && (vpp_netlink_proc[1].pid == 0))
 		return;
 
+	/* if hdmi unplug, clear edid_parsed */
+	if(hdmi_get_plugin() == 0)
+		memset(&edid_parsed, 0, sizeof(edid_parsed_t));
+
 	vpp_netlink_notify(USER_PID, DEVICE_PLUG_IN, plugin);
 	vpp_netlink_notify(WP_PID, DEVICE_PLUG_IN, plugin);
 
 	/* hdmi plugin/unplug */
 	plugin = hdmi_get_plugin();
-	switch_set_state(&vpp_sdev, (plugin && !g_vpp.virtual_display) ? 1 : 0);
+	switch_set_state(&vpp_sdev, plugin ? 1 : 0);
 	wmt_enable_mmfreq(WMT_MMFREQ_HDMI_PLUG, plugin);
 }
 

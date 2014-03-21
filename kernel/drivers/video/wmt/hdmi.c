@@ -39,6 +39,8 @@
 /* #define CONFIG_HDMI_EDID_DISABLE */
 
 #define HDMI_I2C_FREQ	80000
+
+#define MAX_ACR_TV_NUM  128
 /*----------------------- PRIVATE TYPE  --------------------------------------*/
 /* typedef  xxxx hdmi_xxx_t; *//*Example*/
 enum hdmi_fifo_slot_t {
@@ -53,6 +55,18 @@ enum hdmi_fifo_slot_t {
 /*----------------------- INTERNAL PRIVATE VARIABLES - -----------------------*/
 /* int  hdmi_xxx;        *//*Example*/
 
+/*
+Added by howayhuo
+Some TV need fix the HDMI ACR ration, otherwise these TV will show "overclock"
+Fill in the TV vendor name and TV monitor name to this list if your TV needs fix acr
+*/
+static const tv_name_t fix_acr_tv_list[] = {
+	{"TCL", "RTD2662"},  //another name: TCL L19E09
+};
+
+static tv_name_t *p_fix_acr_tv;
+
+static int fixed_acr_ration_val = 2300;
 /*--------------------- INTERNAL PRIVATE FUNCTIONS ---------------------------*/
 /* void hdmi_xxx(void); *//*Example*/
 
@@ -219,7 +233,19 @@ vdo_color_fmt hdmi_get_output_colfmt(void)
 
 int hdmi_get_plugin(void)
 {
-	return vppif_reg32_read(HDMI_HOTPLUG_IN);
+	int plugin;
+
+	if (vppif_reg32_read(HDMI_HOTPLUG_IN_INT)) {
+		  plugin = vppif_reg32_read(HDMI_HOTPLUG_IN);
+	} else {
+		  int tre_en;
+
+		  tre_en = vppif_reg32_read(HDMI_TRE_EN);
+		  vppif_reg32_write(HDMI_TRE_EN, 0);
+		  plugin = vppif_reg32_read(HDMI_RSEN);
+		  vppif_reg32_write(HDMI_TRE_EN, tre_en);
+	}
+	return plugin;
 }
 
 int hdmi_get_plug_status(void)
@@ -815,6 +841,186 @@ void hdmi_tx_vendor_specific_infoframe_packet(void)
 	hdmi_write_packet(header, buf, 28);
 }
 
+/*
+--> Added by howayhuo.
+Some TV (example: TCL L19E09) will overclock if ACR ratio too large,
+So we need decrease the ACR ratio for some special TV
+*/
+static void print_acr(void)
+{
+	int i;
+
+	if(p_fix_acr_tv != NULL) {
+		for(i = 0; i < MAX_ACR_TV_NUM; i++) {
+			if(strlen(p_fix_acr_tv[i].vendor_name) == 0
+				|| strlen(p_fix_acr_tv[i].monitor_name) == 0)
+			break;
+
+			if(i == 0)
+				printk("ACR TV Name:\n");
+
+			printk("  %s,%s\n", p_fix_acr_tv[i].vendor_name, p_fix_acr_tv[i].monitor_name);
+		}
+	}
+}
+
+static void acr_init(void)
+{
+	char buf[512] = {0};
+	int buflen = 512;
+	unsigned long val;
+	int i, j, k, tv_num;
+	int ret, to_save_vendor;
+	tv_name_t tv_name;
+
+	if(p_fix_acr_tv != NULL) {
+		kfree(p_fix_acr_tv);
+		p_fix_acr_tv = NULL;
+	}
+
+	if(wmt_getsyspara("wmt.acr.ratio", buf, &buflen) == 0) {
+		ret = strict_strtoul(buf, 10, &val);
+		if(ret) {
+			printk("[HDMI] Wrong wmt.acr.ratio value: %s\n", buf);
+			return;
+		}
+		if(val >= 0 && val < 0xFFFFF) // total 20 bits
+			fixed_acr_ration_val = (int)val;
+		else
+			printk("[HDMI] Invalid Fixed ACR Ratio: %lu\n", val);
+	}
+
+	if(fixed_acr_ration_val == 0)
+		return;
+
+	/*
+	For example: setenv wmt.acr.tv 'TCH,RTD2662;PHL,Philips 244E'
+	*/
+	if(wmt_getsyspara("wmt.acr.tv", buf, &buflen) != 0) {
+		p_fix_acr_tv = (tv_name_t *)kzalloc(sizeof(fix_acr_tv_list) + sizeof(tv_name_t), GFP_KERNEL);
+		if(p_fix_acr_tv) {
+			memcpy(p_fix_acr_tv, fix_acr_tv_list, sizeof(fix_acr_tv_list));
+			print_acr();
+		} else
+			printk("[HDMI] malloc for ACR fail. malloc len = %d\n",
+				sizeof(fix_acr_tv_list) + sizeof(tv_name_t));
+
+		return;
+	}
+
+	tv_num = 0;
+	buflen = strlen(buf);
+	if(buflen == 0)
+		return;
+
+	if(buflen == sizeof(buf)) {
+		printk("[HDMI] wmt.acr.tv too long\n");
+		return;
+	}
+
+	for(i = 0; i < buflen; i++) {
+		if(buf[i] == ',')
+			tv_num++;
+	}
+
+	/*
+	Limit TV Number
+	*/
+	if(tv_num > MAX_ACR_TV_NUM)
+		tv_num = MAX_ACR_TV_NUM;
+
+	if(tv_num == 0)
+		return;
+
+	printk("acr_tv_num = %d\n", tv_num);
+	p_fix_acr_tv = (tv_name_t *)kzalloc((tv_num + 1) * sizeof(tv_name_t), GFP_KERNEL);
+	if(!p_fix_acr_tv) {
+		printk("[HDMI] malloc for ACR fail. malloc len = %d\n",
+				sizeof(fix_acr_tv_list) + sizeof(tv_name_t));
+		return;
+	}
+	memset(&tv_name, 0, sizeof(tv_name_t));
+
+	j = 0;
+	k = 0;
+	to_save_vendor= 1;
+	for(i = 0; i < buflen + 1; i++) {
+		if(buf[i] != ',' && buf[i] != ';' && buf[i] != '\0') {
+			if(to_save_vendor) {
+				if(k < VENDOR_NAME_LEN)
+					tv_name.vendor_name[k] = buf[i];
+			} else {
+				if(k < MONITOR_NAME_LEN)
+					tv_name.monitor_name[k] = buf[i];
+			}
+			k++;
+		} else if(buf[i] == ',') {
+			to_save_vendor = 0;
+			k = 0;
+		} else {
+			if(strlen(tv_name.vendor_name) == 0 || strlen(tv_name.monitor_name) == 0) {
+				printk("[HDMI] Wrong wmt.acr.tv format\n");
+				kfree(p_fix_acr_tv);
+				p_fix_acr_tv = NULL;
+				break;
+			} else {
+				if(j < tv_num) {
+					memcpy(p_fix_acr_tv + j, &tv_name, sizeof(tv_name_t));
+					memset(&tv_name, 0, sizeof(tv_name_t));
+					j++;
+				}
+
+				if(j == tv_num)
+					break;
+			}
+
+			if(buf[i]== ';') {
+				to_save_vendor = 1;
+				k = 0;
+			} else
+				break;
+		}
+	}
+
+	print_acr();
+}
+
+void acr_exit(void)
+{
+	if(p_fix_acr_tv != NULL) {
+		kfree(p_fix_acr_tv);
+		p_fix_acr_tv = NULL;
+	}
+}
+
+static int use_fix_acr_ratio(void)
+{
+	int i;
+
+	if(fixed_acr_ration_val == 0 || p_fix_acr_tv == NULL)
+		return 0;
+
+	for(i = 0; i < MAX_ACR_TV_NUM; i++) {
+		if(strlen(p_fix_acr_tv[i].vendor_name) == 0
+			|| strlen(p_fix_acr_tv[i].monitor_name) == 0)
+			break;
+
+		if(!strcmp(edid_parsed.tv_name.vendor_name, p_fix_acr_tv[i].vendor_name)
+			&& !strcmp(edid_parsed.tv_name.monitor_name, p_fix_acr_tv[i].monitor_name)) {
+			printk("TV is \"%s %s\". Use fixed HDMI ACR Ratio: %d\n",
+				edid_parsed.tv_name.vendor_name,
+				edid_parsed.tv_name.monitor_name,
+				fixed_acr_ration_val);
+			return 1;
+		}
+	}
+
+	return 0;
+}
+/*
+<-- end added by howayhuo
+*/
+
 void hdmi_set_audio_n_cts(unsigned int freq)
 {
 	unsigned int n, cts;
@@ -854,9 +1060,12 @@ void hdmi_set_audio_n_cts(unsigned int freq)
 	DBGMSG("[HDMI] i2s %d,cts %d,reg 0x%x\n", pll_clk, cts,
 		vppif_reg32_in(AUDREGF_BASE_ADDR + 0x70));
 }
-	vppif_reg32_write(HDMI_AUD_N_20BITS, n);
-	vppif_reg32_write(HDMI_AUD_ACR_RATIO, cts - 1);
 
+	vppif_reg32_write(HDMI_AUD_N_20BITS, n);
+	if(use_fix_acr_ratio())
+		vppif_reg32_write(HDMI_AUD_ACR_RATIO, fixed_acr_ration_val);
+	else
+		vppif_reg32_write(HDMI_AUD_ACR_RATIO, cts - 1);
 #else
 #if 1
 	cts = g_vpp.hdmi_pixel_clock / 1000;
@@ -864,7 +1073,10 @@ void hdmi_set_audio_n_cts(unsigned int freq)
 	cts = vpp_get_base_clock(VPP_MOD_GOVRH) / 1000;
 #endif
 	vppif_reg32_write(HDMI_AUD_N_20BITS, n);
-	vppif_reg32_write(HDMI_AUD_ACR_RATIO, cts - 2);
+	if(use_fix_acr_ratio())
+		vppif_reg32_write(HDMI_AUD_ACR_RATIO, fixed_acr_ration_val);
+	else
+		vppif_reg32_write(HDMI_AUD_ACR_RATIO, cts - 2);
 #endif
 
 #if 1	/* auto detect CTS */
@@ -930,8 +1142,9 @@ void hdmi_config_audio(vout_audio_t *info)
 	hdmi_set_audio_n_cts(info->sample_rate);
 	vppif_reg32_write(HDMI_AUD_ACR_ENABLE, VPP_FLAG_ENABLE);
 	vppif_reg32_write(HDMI_AUD_AIPCLK_RATE, 0);
-	vppif_reg32_out(AUDREGF_BASE_ADDR+0x18c, 0x76543210);
-	hdmi_audio_enable(VPP_FLAG_ENABLE);
+        hdmi_audio_enable(hdmi_get_plugin() ?
+                VPP_FLAG_ENABLE : VPP_FLAG_DISABLE);
+
 }
 
 void hdmi_config_video(hdmi_info_t *info)
@@ -1047,58 +1260,16 @@ void hdmi_get_bksv(unsigned int *bksv)
 }
 
 #ifdef __KERNEL__
-#define CONFIG_HDMI_HOTPLUG_NOTIFY_TIME
-#ifdef CONFIG_HDMI_HOTPLUG_NOTIFY_TIME
-struct timer_list hdmi_notify_timer;
-struct timer_list hdmi_notify_vfb_timer;
-#define HDMI_HOTPLUG_NOTIFY_MS 2000
-
-void hdmi_virtual_fb_hotplug_tmr(int status)
-{
-	vpp_netlink_notify_plug(VPP_VOUT_ALL, 1);
-}
-
-void hdmi_hotplug_tmr(int status)
-{
-	int cur_status;
-
-	if (g_vpp.virtual_display) {
-		vpp_netlink_notify_plug(VPP_VOUT_ALL, 0);
-		/* add external timer for framework should skip
-		continue notify just service last one */
-		if (hdmi_notify_vfb_timer.function)
-			del_timer(&hdmi_notify_vfb_timer);
-		init_timer(&hdmi_notify_vfb_timer);
-		hdmi_notify_vfb_timer.data = 0;
-		hdmi_notify_vfb_timer.function =
-		(void *) hdmi_virtual_fb_hotplug_tmr;
-		hdmi_notify_vfb_timer.expires = jiffies + msecs_to_jiffies(100);
-		add_timer(&hdmi_notify_vfb_timer);
-		return;
-	}
-
-	cur_status = hdmi_get_plugin();
-	vpp_netlink_notify_plug(VPP_VOUT_NUM_HDMI, cur_status);
-	/* DPRINT("[HDMI] %s %d,cur %d\n", __FUNCTION__, status, cur_status); */
-}
-#endif /* End of CONFIG_HDMI_HOTPLUG_NOTIFY_TIME */
-
 void hdmi_hotplug_notify(int plug_status)
 {
-/*	DPRINT("[CEC] %s %d\n", __FUNCTION__, plug_status); */
-
-#ifdef CONFIG_HDMI_HOTPLUG_NOTIFY_TIME
-	if (hdmi_notify_timer.function)
-		del_timer(&hdmi_notify_timer);
-	init_timer(&hdmi_notify_timer);
-	hdmi_notify_timer.data = plug_status;
-	hdmi_notify_timer.function = (void *) hdmi_hotplug_tmr;
-	hdmi_notify_timer.expires = jiffies +
-		msecs_to_jiffies(HDMI_HOTPLUG_NOTIFY_MS);
-	add_timer(&hdmi_notify_timer);
-#else
-	vpp_netlink_notify_plug(VPP_VOUT_NUM_HDMI, plug_status);
-#endif
+		   if (g_vpp.hdmi_disable)
+			     return;
+		   if (g_vpp.virtual_display || (g_vpp.dual_display == 0)) {
+			     vpp_netlink_notify_plug(VPP_VOUT_ALL, 0);
+			     vpp_netlink_notify_plug(VPP_VOUT_ALL, 1);
+			     return;
+		   }
+		   vpp_netlink_notify_plug(VPP_VOUT_NUM_HDMI, plug_status);
 }
 #else
 #define hdmi_hotplug_notify
@@ -1106,40 +1277,44 @@ void hdmi_hotplug_notify(int plug_status)
 
 int hdmi_check_plugin(int hotplug)
 {
-	int plugin;
+           static int last_plugin = -1;
+           int plugin;
+           int flag;
 
-	plugin = hdmi_get_plugin();
-	hdmi_clear_plug_status();
+           if (g_vpp.hdmi_disable)
+                     return 0;
+
+           plugin = hdmi_get_plugin();
+           hdmi_clear_plug_status();
 #ifdef __KERNEL__
-	/* disable HDMI before change clock */
-	if (plugin == 0) {
-		hdmi_set_enable(0);
-		hdmi_set_power_down(1);
-	}
-	vpp_set_clock_enable(DEV_HDMII2C, plugin, 1);
-	vpp_set_clock_enable(DEV_HDCE, plugin, 1);
-	/* slow down clock for plugout */
-	if (1) {
-		int flag;
+           /* disable HDMI before change clock */
+           if (plugin == 0) {
+                     hdmi_set_enable(0);
+                     hdmi_set_power_down(1);
+           }
+           vpp_set_clock_enable(DEV_HDMII2C, plugin, 1);
+           vpp_set_clock_enable(DEV_HDCE, plugin, 1);
 
-		flag = (auto_pll_divisor(DEV_HDMILVDS, GET_FREQ, 0, 0)
-			== 8000000) ? 0 : 1;
-		if (plugin != flag) {
-			int pixclk;
+           /* slow down clock for plugout */
+           flag = (auto_pll_divisor(DEV_HDMILVDS, GET_FREQ, 0, 0)
+                                == 8000000) ? 0 : 1;
+           if ((plugin != flag) && !g_vpp.virtual_display) {
+                     int pixclk;
 
-			pixclk = (plugin || g_vpp.virtual_display) ?
-				g_vpp.hdmi_pixel_clock : 8000000;
-			auto_pll_divisor(DEV_HDMILVDS, SET_PLLDIV, 0, pixclk);
-		}
-	}
+                     pixclk = (plugin) ? g_vpp.hdmi_pixel_clock : 8000000;
+                     auto_pll_divisor(DEV_HDMILVDS, SET_PLLDIV, 0, pixclk);
+           }
 #endif
-	DPRINT("[HDMI] HDMI plug%s,hotplug %d\n", (plugin) ?
-						"in" : "out", hotplug);
-#if 0	/* Denzel test */
-	if (plugin == 0)
-		hdmi_set_dvi_enable(VPP_FLAG_ENABLE);
+           if (last_plugin != plugin) {
+                     DPRINT("[HDMI] HDMI plug%s,hotplug %d\n", (plugin) ?
+                                                                "in" : "out", hotplug);
+                     last_plugin = plugin;
+           }
+#if 0   /* Denzel test */
+           if (plugin == 0)
+                     hdmi_set_dvi_enable(VPP_FLAG_ENABLE);
 #endif
-	return plugin;
+           return plugin;
 }
 
 void hdmi_reg_dump(void)
@@ -1277,11 +1452,35 @@ static unsigned int *hdmi_pm_bk2;
 static unsigned int hdmi_pm_enable;
 static unsigned int hdmi_pm_enable2;
 static int hdmi_plug_enable = 0xFF;
+extern struct switch_dev vpp_sdev;
+static int hdmi_resume_plug_cnt;
+#define HDMI_RESUME_PLUG_MS	50
+#define HDMI_RESUME_PLUG_CNT	20
+static void hdmi_do_resume_plug(struct work_struct *ptr)
+{
+	vout_t *vo;
+	int plugin;
+	struct delayed_work *dwork = to_delayed_work(ptr);
+
+	plugin = hdmi_check_plugin(0);
+	vo = vout_get_entry(VPP_VOUT_NUM_HDMI);
+	vout_change_status(vo, VPP_VOUT_STS_PLUGIN, plugin);
+	if (plugin)
+		hdmi_hotplug_notify(1);
+	hdmi_resume_plug_cnt --;
+	if (hdmi_resume_plug_cnt && (vpp_sdev.state == 0))
+		schedule_delayed_work(dwork,
+			msecs_to_jiffies(HDMI_RESUME_PLUG_MS));
+}
+
+DECLARE_DELAYED_WORK(hdmi_resume_work, hdmi_do_resume_plug);
+
 void hdmi_suspend(int sts)
 {
 	vo_hdmi_set_clock(1);
 	switch (sts) {
 	case 0:	/* disable module */
+		cancel_delayed_work_sync(&hdmi_resume_work);
 		hdmi_pm_enable = vppif_reg32_read(HDMI_ENABLE);
 		hdmi_reg32_write(HDMI_ENABLE, 0);
 		hdmi_pm_enable2 = vppif_reg32_read(HDMI_HDEN);
@@ -1298,33 +1497,13 @@ void hdmi_suspend(int sts)
 			(REG_HDMI_END - REG_HDMI_BEGIN));
 		hdmi_pm_bk2 = vpp_backup_reg(REG_HDMI2_BEGIN,
 			(REG_HDMI2_END - REG_HDMI2_BEGIN));
+	 	switch_set_state(&vpp_sdev, 0);
+		hdmi_resume_plug_cnt = 20;
 		break;
 	default:
 		break;
 	}
 	vo_hdmi_set_clock(0);
-}
-
-#define HDMI_RESUME_TIME	1000
-struct timer_list hdmi_resume_timer;
-void hdmi_resume_tmr(int status)
-{
-	DBG_MSG("\n");
-	hdmi_clear_plug_status();
-	hdmi_enable_plugin(hdmi_plug_enable);
-	hdmi_plug_enable = 0xFF;
-}
-
-void hdmi_set_resume_tmr(void)
-{
-	if (hdmi_resume_timer.function)
-		del_timer(&hdmi_resume_timer);
-	init_timer(&hdmi_resume_timer);
-	hdmi_resume_timer.data = 0;
-	hdmi_resume_timer.function = (void *) hdmi_resume_tmr;
-	hdmi_resume_timer.expires = jiffies +
-		msecs_to_jiffies(HDMI_RESUME_TIME);
-	add_timer(&hdmi_resume_timer);
 }
 
 void hdmi_resume(int sts)
@@ -1345,9 +1524,17 @@ void hdmi_resume(int sts)
 	case 1:	/* enable module */
 		hdmi_reg32_write(HDMI_ENABLE, hdmi_pm_enable);
 		vppif_reg32_write(HDMI_HDEN, hdmi_pm_enable2);
-		hdmi_set_resume_tmr();
 		break;
 	case 2: /* enable tg */
+		hdmi_check_plugin(0);
+		hdmi_clear_plug_status();
+		hdmi_enable_plugin(hdmi_plug_enable);
+		hdmi_plug_enable = 0xFF;
+		if (vpp_sdev.state == 0) {
+			hdmi_resume_plug_cnt = HDMI_RESUME_PLUG_CNT;
+			schedule_delayed_work(&hdmi_resume_work,
+				msecs_to_jiffies(HDMI_RESUME_PLUG_MS));
+		}
 		break;
 	default:
 		break;
@@ -1421,5 +1608,7 @@ void hdmi_init(void)
 	g_vpp.hdmi_init = 1;
 	if (hdmi_cp)
 		hdmi_cp->init();
+
+	acr_init();
 }
 #endif /* WMT_FTBLK_HDMI */

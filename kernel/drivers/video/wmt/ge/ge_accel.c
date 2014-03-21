@@ -137,6 +137,7 @@ static int ge_vo_pan_display(struct fb_var_screeninfo *var,
 	return 0;
 }
 
+#if 0
 static void fbiomemcpy(struct fb_info *info,
 	unsigned long dst, unsigned long src, size_t len)
 {
@@ -158,6 +159,7 @@ static void fbiomemcpy(struct fb_info *info,
 	if (pdst && (dst < info->fix.smem_start || dst > tmp))
 		iounmap(pdst);
 }
+#endif
 
 struct ge_var {
 	struct fb_info *info;
@@ -384,6 +386,7 @@ static void ge_var_sync3(struct ge_var *ge_var)
 	queue_work(ge_var->wq, &ge_var->notifier);
 }
 
+#if 0
 static unsigned long fb_get_phys_addr(struct fb_info *info,
 				      struct fb_var_screeninfo *var)
 {
@@ -411,6 +414,7 @@ static unsigned long fb_get_disp_size(struct fb_info *info,
 
 	return size;
 }
+#endif
 
 static int fb_var_cmp(struct fb_var_screeninfo *var1,
 		      struct fb_var_screeninfo *var2)
@@ -440,55 +444,11 @@ static int fb_var_cmp(struct fb_var_screeninfo *var1,
 int ge_init(struct fb_info *info)
 {
 	static int boot_init; /* boot_init = 0 */
-	unsigned long dispaddr = fb_get_phys_addr(info, &info->var);
-	unsigned long logoaddr;
-	int i;
-	int len;
-	vout_info_t *vo;
 	/*
 	 * Booting time initialization
 	 */
 	if (!boot_init) {
-#if 0
-		/*
-		 * U-Boot logo is at mali's memory.
-		 * Copy U-Boot logo to GE's memory and
-		 * let GOVRH to read GE's memory.
-		 */
-		vo = vout_info_get_entry(0);
-		vo->govr->fb_p->get_addr((unsigned int *)&logoaddr,
-					 (unsigned int *)&i);
-
-		if (logoaddr != dispaddr) {
-			/* Due to U-Boot logo may overlap to 1st buffer,
-			 * we have to copy U-Boot logo to 2nd buffer first,
-			 * and then copy 2nd buffer to 1st buffer.
-			 */
-			len = fb_get_disp_size(info, &info->var);
-			dispaddr += len * (GE_FB_NUM - 1);
-			i = GE_FB_NUM;
-			while (i--) {
-				/*
-				printk(KERN_DEBUG "copy logo from %p to %p\n",
-					(void *)logo.addr, (void *)s.addr);
-				*/
-				fbiomemcpy(info, dispaddr, logoaddr, len);
-				logoaddr = dispaddr;
-#ifdef HAVE_VPP
-				p_govrh->fb_p->fb.y_addr = dispaddr;
-				p_govrh->fb_p->fb.c_addr = 0;
-				govrh_set_fb_addr(p_govrh, dispaddr, 0);
-				p_govrh2->fb_p->fb.y_addr = dispaddr;
-				p_govrh2->fb_p->fb.c_addr = 0;
-				govrh_set_fb_addr(p_govrh2, dispaddr, 0);
-				vpp_wait_vsync(0, 1);
-#endif /* HAVE_VPP */
-				dispaddr -= len;
-			}
-		}
-#endif
 		ge_var_s = create_ge_var(info);
-
 		boot_init = 1;
 	}
 
