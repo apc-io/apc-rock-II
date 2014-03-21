@@ -1,0 +1,4 @@
+config BATTERY_WMT
+	tristate "wmt battery driver (wonder media & others)"
+	help
+	  Say Y here to enable support for batteries with wmt chip.

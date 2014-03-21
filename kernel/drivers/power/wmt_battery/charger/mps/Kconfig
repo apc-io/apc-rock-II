@@ -1,0 +1,4 @@
+config MPS_CHARGER
+		tristate "MPS Charger driver (MPS & others)"
+		help
+			Say Y here to enable support for charger with mps chip.	  

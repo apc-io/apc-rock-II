@@ -1,0 +1,11 @@
+#
+# WMT Sensor configuration
+#
+config INPUT_SENSOR
+	bool "WMT Sensor"
+	help
+	  Say Y here, and a list of supported sensor will be displayed.
+	  This option doesn't affect the kernel.
+
+	  If unsure, say Y.
+

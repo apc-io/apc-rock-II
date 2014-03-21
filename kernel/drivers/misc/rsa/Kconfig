@@ -1,0 +1,6 @@
+menu "WMT RSA "
+config WMT_RSA
+	tristate "RSA"
+	help
+	  This enables the RSA decode/encode
+endmenu
