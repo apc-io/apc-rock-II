@@ -298,7 +298,7 @@ enum usb_device_speed {
 #define STRING_SERIAL	    3
 #define STRING_CONFIG       4
 #define STRING_INTERFACE    5
-
+#define STRING_EE    0xEE //for ubuntu
 //Rx20 ~ RX24 : EndPoint X IRP Handler Transfer Descriptor
 #define UDC_TD_EPX_DT                    0x00000001
 #define UDC_TD_EP0_DIR                   0x00000002
@@ -583,6 +583,13 @@ static const u8 string_desc_5[] = { // STRING_INTERFACE
 	't',0x0,' ',0x0,'I',0x0,'n',0x0,'t',0x0,'e',0x0,
 	'r',0x0,'f',0x0,'a',0x0,'c',0x0,'e',0x0,' ',0x0
 };
+static const u8 string_desc_6[] = { // STRING_EE  
+	(0x26 + 2),0x03, 
+	'F',0x0,'a',0x0,'s',0x0,'t',0x0,'b',0x0,'o',0x0,'o',0x0,
+	't',0x0,' ',0x0,'I',0x0,'n',0x0,'t',0x0,'e',0x0,
+	'r',0x0,'f',0x0,'a',0x0,'c',0x0,'e',0x0,' ',0x0
+};
+
 #define RESPOK		0
 #define RESPFAIL	1
 
@@ -1525,9 +1532,25 @@ static void udc_control_prepare_data_resp(void)
 				   case STRING_INTERFACE:
 				   	 if(value > sizeof(string_desc_5))
 					value = sizeof(string_desc_5);
-				          memcpy((unsigned char*)control_buf, (u8 *)string_desc_5,sizeof(string_desc_5));
-
+				          memcpy((unsigned char*)control_buf, (u8 *)string_desc_5,sizeof(string_desc_5)); 
+				          
 				   break;
+				   
+				   case STRING_EE:
+				   	Nprintf("STRING_EE\n");
+				   	 if(value > sizeof(string_desc_6))
+						value = sizeof(string_desc_6);
+				          memcpy((unsigned char*)control_buf, (u8 *)string_desc_6,sizeof(string_desc_6)); 
+				          
+				   break;
+
+				   default:
+					Nprintf("STRING_default\n");
+				   	 if(value > sizeof(string_desc_6))
+						value = sizeof(string_desc_6);
+				          memcpy((unsigned char*)control_buf, (u8 *)string_desc_6,sizeof(string_desc_6)); 
+
+				   break; 						
 			      }
 
 		          for(i=0; i<value; i++)
