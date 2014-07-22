@@ -812,10 +812,11 @@ static int get_partition_idx(char *string, int *ret)
 
 void init_nand_partitions(void){
     char partition_name[32];
-	char * pstr, *s = NULL, *tmp = NULL;
+	char  *s = NULL, *tmp = NULL;
+    char str[128]={0};
 	struct nand_chip * chip = get_current_nand_chip();
 	__u64 part_size, start_off, chip_size;
-	int index, i;
+	int index, i, n;
 
 	if(chip == NULL) return;
 	
@@ -828,10 +829,11 @@ void init_nand_partitions(void){
     
 	chip_size = (__u64)chip->dwBlockCount * (__u64)chip->dwPageCount * (__u64)chip->oobblock;
 
-    
-	pstr = getenv("wmt.nand.parition");
-	if(pstr){
-		s = pstr;
+    n = getenv_f("wmt.nand.partition", str, sizeof(str));
+	//pstr = getenv("wmt.nand.parition");
+    printf("pstr is %s\n", str);
+	if(n > 0){
+		s = str;
 		while(*s != '\0')
 		{
 			index = NF_PART_MAX;
