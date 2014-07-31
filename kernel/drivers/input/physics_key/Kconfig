@@ -1,0 +1,27 @@
+#
+# Input core configuration
+#
+config INPUT_PKEY
+	bool "physics_key" if EMBEDDED || !X86
+	default y
+	depends on INPUT
+	help
+	  Say Y here, and a list of supported remote control devices will 
+	  be displayed. This option doesn't affect the kernel.
+
+	  If unsure, say y.
+
+config PKEY_WonderMedia
+	tristate "WonderMedia physics_key support" if !PC
+	default y
+	depends on INPUT && INPUT_PKEY
+	help
+	  Say Y here if you want remote control support for WonderMedia.
+
+	  If unsure, say Y.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called wmt-pkey.
+
+
+

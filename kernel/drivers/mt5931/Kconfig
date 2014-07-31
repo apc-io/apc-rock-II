@@ -1,0 +1,77 @@
+menu "MediaTek Connectivity MT5931 Config"
+
+config MTK_MT5931
+	bool "MediaTek Connectivity MT5931 Support"
+	default y
+	help
+	  MTK connectivity wifi chip driver for MT5931
+
+
+#choice
+#	prompt "Select Chip"
+#	depends on MTK_COMBO
+
+#config MTK_WIFI_CHIP_MT5931
+#	bool "MT5931"
+#config MTK_COMBO_CHIP_MT6628
+#	bool "MT6620"
+#config MTK_COMBO_CHIP_MT6628
+#	bool "MT6628"
+#endchoice
+
+
+config MTK_MT5931_WIFI
+	tristate "MT5931 Wi-Fi"
+	depends on MTK_MT5931
+	depends on MMC
+	depends on IPV6
+	select WIRELESS_EXT
+	select WEXT_PRIV
+	default m
+	help
+	  This module adds support for wireless adapters based on
+	  MTK MT5931 chipset.
+
+	  This driver uses the kernel's wireless extensions subsystem.
+
+	  If you choose to build a module, it'll be called dhd. Say M if
+	  unsure.
+
+
+config MTK_MT5931_DEBUG
+	depends on MTK_MT5931_WIFI
+	bool "Enable debug output from MT5931 driver"
+	default n
+	help
+	  Enable debug messages output from MT5931 driver
+
+config MTK_MT5931_WLAN_PROC
+	depends on MTK_MT5931_WIFI
+	bool "Enable procfs support"
+	default n
+	help
+	  Enable procfs support.
+
+config MTK_MT5931_SUPPORT_XLOG
+	depends on MTK_MT5931_WIFI
+	bool "Enable XLOG support in MT5931 driver"
+	default n
+	help
+	Enable XLOG support for devices using MT5931
+
+config MTK_MT5931_SUPPORT_AEE
+	depends on MTK_MT5931_WIFI
+	bool "Enable AEE support in MT5931 driver"
+	default n
+	help
+	Enable AEE support for devices using MT5931
+
+config MTK_MT5931_WAPI_SUPPORT
+	depends on MTK_MT5931_WIFI
+	bool "Enable WAPI support in MT5931 driver"
+	default n
+	help
+	Enable WAPI support for devices using MT5931
+
+
+endmenu

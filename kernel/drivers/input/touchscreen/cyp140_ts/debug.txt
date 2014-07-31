@@ -1,0 +1,3 @@
+/ # wmtenv get wmt.io.touch
+1:cyp140:7:600:1024:4:0:1:-1:5 //it seems ok
+

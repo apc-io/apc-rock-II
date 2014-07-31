@@ -1,0 +1,16 @@
+#
+# CYP140 capacity touch screen driver configuration
+#
+config TOUCHSCREEN_CYP140
+	tristate "CYPRESS CYP140 I2C Capacitive Touchscreen Input Driver Support"
+	depends on ARCH_WMT
+	default m
+	help
+	  Say Y here if you have an WMT based board with touchscreen
+	  attached to it.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called s_wmt_ts_cyp140
+

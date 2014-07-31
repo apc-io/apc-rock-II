@@ -1,0 +1,15 @@
+#
+# Multimedia Video device configuration
+#
+
+
+config WMT_VIDEO_ENCODE_JPEG
+	tristate "WonderMedia Hardware JPEG encoder"
+	---help---
+	  Say Y here to use hardware to encode JPEG files
+
+config WMT_VIDEO_ENCODE_H264
+	tristate "WonderMedia Hardware H264 encoder"
+	---help---
+	  Say Y here to use hardware to encode H264 files
+     

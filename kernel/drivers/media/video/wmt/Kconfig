@@ -1,0 +1,19 @@
+#
+# Multimedia Video device configuration
+#
+
+config WMT_VIDEO_LOCK
+	tristate "WonderMedia Video Lock"
+	---help---
+	  Say Y here to enable Video Lock
+
+config WMT_VIDEO_DECODE_JPEG
+	tristate "WonderMedia Hardware JPEG decoder"
+	---help---
+	  Say Y here to use hardware to decode JPEG files
+
+config WMT_VIDEO_DECODE_MSVD
+	tristate "WonderMedia Hardware MSVD decoder"
+	---help---
+	  Say Y here to use hardware to decode MSVD files
+     

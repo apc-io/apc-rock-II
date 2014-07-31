@@ -1,0 +1,16 @@
+#
+# GSL1680 capacity touch screen driver configuration
+#
+config TOUCHSCREEN_GSL1680
+	tristate "ilead GSL1680 I2C Touchscreen Input Driver Support"
+	depends on ARCH_WMT
+	default y
+	help
+	  Say Y here if you have an WMT based board with touchscreen
+	  attached to it.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called s_wmt_ts_gsl1680.
+

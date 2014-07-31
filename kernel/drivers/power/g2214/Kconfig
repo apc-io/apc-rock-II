@@ -1,0 +1,5 @@
+config G2214_CHARGER
+		tristate "GMT G2214 Charger driver (GMT & others)"
+		depends on I2C
+		help
+			Say Y here to enable support for charger with g2214 chip.	  
