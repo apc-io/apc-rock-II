@@ -1393,7 +1393,22 @@ static void udc_control_prepare_data_resp(void)
                     Result = RESPOK;
 			 	break;
 
+	case USB_REQ_GET_CONFIGURATION: // for MAC 20140801
 
+		   value = u.r.wLength;
+
+		       if(value !=  1)
+		          value = 1;
+
+         EP0_BUF[0] =1;
+
+	//		start_vendor_command = 1;
+	//		udc.ep0_set_config = 1;
+         CurXferLength = value;
+         Result = RESPOK;
+
+
+			 break;
 		case USB_REQ_GET_DESCRIPTOR:
 
 		    switch (u.r.wValue >> 8)
@@ -1416,7 +1431,7 @@ static void udc_control_prepare_data_resp(void)
 
 			 break;
 
-
+			
 			 case USB_DT_CONFIG:
 			       value = u.r.wLength;
 
